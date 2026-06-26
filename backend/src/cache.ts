@@ -6,6 +6,8 @@ export const NS = {
   AUTH_REFRESH: "auth:refresh",
   AUTH_SESSIONS: "auth:sessions",
   API: "api",
+  GAS_PRICE: "gas:price",
+  GAS_HISTORY: "gas:history",
   DEFI_PRICE: "defi:price",
   DEFI_POOLS: "defi:pools",
   // Email service

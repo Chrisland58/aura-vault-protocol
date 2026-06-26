@@ -1,25 +1,32 @@
-import express from "express";
 import cors from "cors";
-import { pingRedis } from "./redis.js";
+import express from "express";
+import { authenticate } from "./middleware/authMiddleware.js";
+import {
+  authRateLimiter,
+  globalIpRateLimiter,
+  userRateLimiter,
+} from "./middleware/rateLimitMiddleware.js";
 import {
   generateTokens,
-  validateAccessToken,
-  refreshAccessToken,
-  logout,
   getUserSessions,
+  logout,
+  refreshAccessToken,
   revokeAllSessions,
   type Tier,
 } from "./auth.js";
+import { pingRedis, disconnectRedis } from "./redis.js";
 import { webhookRouter } from "./webhook.js";
+import portfolioRouter from "./portfolio.js";
+import { emailRouter } from "./routes/emailRoutes.js";
+import { gasRouter } from "./routes/gasRoutes.js";
+import { startWorker, stopWorker } from "./queue.js";
+import { warmCache } from "./services/defi.js";
+import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// Global IP rate limiter — health check excluded so load-balancer probes are not throttled
 app.use(globalIpRateLimiter(["/api/health"]));
-
-// ── Auth ─────────────────────────────────────────────────────────────────────
 
 app.post("/api/auth/login", authRateLimiter(), async (req, res) => {
   const { walletAddress, deviceId, tier } = req.body;
@@ -27,6 +34,7 @@ app.post("/api/auth/login", authRateLimiter(), async (req, res) => {
     res.status(400).json({ error: "walletAddress required" });
     return;
   }
+
   const validTier: Tier = tier === "paid" ? "paid" : "free";
   const tokens = await generateTokens(walletAddress, deviceId, validTier);
   res.json(tokens);
@@ -38,16 +46,23 @@ app.post("/api/auth/refresh", authRateLimiter(), async (req, res) => {
     res.status(400).json({ error: "refreshToken required" });
     return;
   }
+
   const tokens = await refreshAccessToken(refreshToken);
   if (!tokens) {
     res.status(401).json({ error: "Invalid or expired refresh token" });
     return;
   }
+
   res.json(tokens);
 });
 
 app.post("/api/auth/logout", authenticate, userRateLimiter(), async (req, res) => {
-  const token = req.headers.authorization!.slice(7);
+  const token = req.headers.authorization?.slice(7);
+  if (!token) {
+    res.status(401).json({ error: "Missing token" });
+    return;
+  }
+
   const { refreshToken } = req.body;
   await logout(token, refreshToken);
   res.json({ success: true });
@@ -63,30 +78,43 @@ app.post("/api/auth/revoke-all", authenticate, userRateLimiter(), async (req, re
   res.json({ success: true });
 });
 
-// Webhook management (authenticated)
 app.use("/api/webhooks", authenticate, webhookRouter);
-
-// Health check
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
-});
-
-// Portfolio
+app.use("/api/email", emailRouter);
 app.use("/api/v1/user/portfolio", authenticate, portfolioRouter);
+app.use("/api/v1/gas", gasRouter);
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  startWorker();
-  console.log(`Aura Vault backend running on port ${PORT}`);
-  await warmCache();
-  startEmailWorker();
+app.get("/api/health", async (_req, res) => {
+  const redisHealthy = await pingRedis();
+  res.json({
+    status: redisHealthy ? "ok" : "degraded",
+    redis: redisHealthy,
+    timestamp: new Date().toISOString(),
+  });
 });
 
-// Graceful shutdown
-for (const signal of ["SIGTERM", "SIGINT"]) {
+const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
+const server = app.listen(PORT, () => {
+  startWorker();
+  startEmailWorker();
+  void warmCache();
+  console.log(`Aura Vault backend running on port ${PORT}`);
+});
+
+async function shutdown(signal: string): Promise<void> {
+  console.log(`[shutdown] received ${signal}`);
+  stopWorker();
+  stopEmailWorker();
+  server.close(async () => {
+    await disconnectRedis().catch((err) => {
+      console.error("[shutdown] redis disconnect failed:", err);
+    });
+    process.exit(0);
+  });
+}
+
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
-    stopEmailWorker();
-    server.close(() => process.exit(0));
+    void shutdown(signal);
   });
 }
 
