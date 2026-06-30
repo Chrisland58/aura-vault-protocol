@@ -1,18 +1,13 @@
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-import "./styles/global.css";
-import App from "./App";
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { ThemeProvider } from './theme';
+import App from './App';
+import './styles/global.css';
 
-// Axe-core in dev only
-if (import.meta.env.DEV) {
-  const { default: axe } = await import("@axe-core/react");
-  const React = await import("react");
-  const ReactDOM = await import("react-dom");
-  axe(React.default, ReactDOM.default, 1000);
-}
-
-createRoot(document.getElementById("root")!).render(
+createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <ThemeProvider>
+      <App />
+    </ThemeProvider>
   </StrictMode>
 );

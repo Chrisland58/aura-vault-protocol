@@ -44,7 +44,7 @@ describe("Accessibility (axe WCAG 2.1 AA)", () => {
   });
 
   it("Modal has no violations when open", async () => {
-    const { container } = render(
+    render(
       <Modal isOpen={true} title="Confirm" onClose={noop}>
         <p>Modal content</p>
       </Modal>
