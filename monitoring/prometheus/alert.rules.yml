@@ -1,0 +1,134 @@
+groups:
+  - name: aura-vault-critical
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.instance }} has been unreachable for more than 1 minute."
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate on {{ $labels.job }}"
+          description: "Error rate is above 5% for 5 minutes (current: {{ $value | humanizePercentage }})."
+
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High p95 latency on {{ $labels.job }}"
+          description: "95th percentile latency is above 2 seconds (current: {{ $value }}s)."
+
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes / 1024 / 1024 > 512
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.job }}"
+          description: "Memory usage is above 512MB for 10 minutes."
+
+  - name: aura-vault-sla
+    rules:
+      - alert: SLABreachAvailability
+        expr: avg_over_time(up{job="aura-vault-api"}[1h]) < 0.999
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SLA breach: availability below 99.9%"
+          description: "API availability has dropped below 99.9% over the last hour."
+
+      - alert: SLABreachLatency
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job="aura-vault-api"}[1h])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SLA breach: p99 latency above 5s"
+          description: "99th percentile latency exceeds 5 seconds over the last hour."
+
+  - name: aura-vault-blockchain
+    rules:
+      - alert: TransactionFailureRate
+        expr: rate(blockchain_transactions_total{status="failed"}[10m]) / rate(blockchain_transactions_total[10m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High blockchain transaction failure rate"
+          description: "More than 10% of transactions are failing."
+
+      - alert: VaultBalanceLow
+        expr: vault_balance_xlm < 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Vault balance is low"
+          description: "Vault XLM balance is below 100 (current: {{ $value }})."
+
+  - name: aura-vault-operations
+    rules:
+      - alert: VaultPaused
+        expr: vault_is_paused == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault is paused"
+          description: "The Aura Vault has been paused for more than 5 minutes. Deposits, withdrawals, and harvests are blocked."
+
+      - alert: VaultBalanceMismatch
+        expr: increase(vault_balance_mismatch_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault balance mismatch detected (possible flash-loan attack)"
+          description: "The flash-loan guard triggered {{ $value }} time(s) in the last 5 minutes."
+
+      - alert: VaultDepositsStopped
+        expr: rate(vault_deposits_total[15m]) == 0 and vault_total_shares > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No vault deposits in the last 15 minutes"
+          description: "The vault has shares outstanding but no deposits have been recorded recently."
+
+      - alert: VaultSharePriceDrop
+        expr: (vault_total_assets / vault_total_shares) < (vault_total_assets offset 1h / vault_total_shares offset 1h) * 0.95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault share price dropped >5% in 1 hour"
+          description: "Share price has fallen significantly. Current: {{ $value }}."
+
+      - alert: VaultHighFeeAccumulation
+        expr: vault_total_fees_collected > 1000000000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Vault has accumulated large unclaimed fees"
+          description: "Unclaimed fees: {{ $value }} stroops. Consider withdrawing to treasury."
+
+      - alert: VaultTransactionFailureRate
+        expr: rate(vault_transactions_total{status="failed"}[5m]) / rate(vault_transactions_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High vault transaction failure rate"
+          description: "More than 5% of vault transactions are failing (current: {{ $value | humanizePercentage }})."

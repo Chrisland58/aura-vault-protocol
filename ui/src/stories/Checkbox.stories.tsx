@@ -1,29 +1,24 @@
-import type { Meta, StoryObj } from '@storybook/react';
-import { Checkbox, Stack } from '../components/ds';
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { Checkbox, Switch } from "../components/Composites";
 
-// ── Checkbox ─────────────────────────────────────────────────────────────
-const checkboxMeta: Meta<typeof Checkbox> = {
-  title: 'Primitives/Checkbox',
+/* ── Checkbox ─────────────────────────────────────────────────── */
+/**
+ * `Checkbox` is an accessible boolean input.
+ *
+ * ## Accessibility
+ * - Label associated via `htmlFor`/`id`
+ * - Uses native `<input type="checkbox">` for full keyboard/screen reader support
+ */
+const checkboxMeta = {
+  title: "Composites/Checkbox",
   component: Checkbox,
-  tags: ['autodocs'],
-  args: { label: 'I agree to the vault terms', checked: false },
-};
+  parameters: { layout: "centered" },
+  tags: ["autodocs"],
+} satisfies Meta<typeof Checkbox>;
 export default checkboxMeta;
-type CheckboxStory = StoryObj<typeof Checkbox>;
+type CheckboxStory = StoryObj<typeof checkboxMeta>;
 
-export const Unchecked:     CheckboxStory = { args: { checked: false } };
-export const Checked:       CheckboxStory = { args: { checked: true } };
-export const Indeterminate: CheckboxStory = { args: { indeterminate: true, label: 'Select all positions' } };
-export const WithDesc:      CheckboxStory = { args: { checked: true, description: 'Enable automatic yield compounding every 24h' } };
-export const WithError:     CheckboxStory = { args: { error: 'You must accept terms to continue' } };
-export const DisabledCheck: CheckboxStory = { args: { disabled: true, checked: true } };
-
-export const InStack = {
-  name: 'In Stack',
-  render: () => (
-    <Stack gap={3}>
-      <Checkbox label="Auto-harvest" checked />
-      <Checkbox label="Share analytics" />
-    </Stack>
-  ),
-};
+export const Default:     CheckboxStory = { args: { label: "I agree to the terms" } };
+export const Checked:     CheckboxStory = { args: { label: "Notifications enabled", defaultChecked: true } };
+export const WithError:   CheckboxStory = { args: { label: "Accept terms", error: "You must accept the terms" } };
+export const Disabled:    CheckboxStory = { args: { label: "Premium feature", disabled: true } };

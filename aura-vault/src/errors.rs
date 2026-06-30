@@ -14,8 +14,8 @@ pub enum VaultError {
     MathOverflow           = 6,
     InvalidAddress         = 7,
     ZeroShares             = 8,
-    /// Caller is not the admin — upgrade rejected.
     UpgradeUnauthorized    = 9,
-    /// On-chain layout version doesn't match CURRENT_LAYOUT_VERSION.
     StorageLayoutMismatch  = 10,
+    VaultPaused            = 11,
+    BalanceMismatch        = 12,
 }

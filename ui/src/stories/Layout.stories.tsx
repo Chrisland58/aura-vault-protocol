@@ -1,57 +1,96 @@
-import type { Meta, StoryObj } from '@storybook/react';
-import { Badge, Avatar, Divider, Stack } from '../components/ds';
+import type { Meta, StoryObj } from "@storybook/react";
+import { Stack, Grid, Flex, Container, Spacer } from "../components/Layout";
 
-// ── Badge ─────────────────────────────────────────────────────────────────
-export const BadgeStories: Meta<typeof Badge> = {
-  title: 'Layout/Badge',
-  component: Badge,
-  tags: ['autodocs'],
-  args: { children: 'Active' },
-};
+const meta = {
+  title: "Layout/Stack",
+  component: Stack,
+  tags: ["autodocs"],
+} satisfies Meta<typeof Stack>;
 
-// ── Avatar ────────────────────────────────────────────────────────────────
-const avatarMeta: Meta<typeof Avatar> = {
-  title: 'Layout/Avatar',
-  component: Avatar,
-  tags: ['autodocs'],
-  argTypes: {
-    size:   { control: 'select', options: ['xs', 'sm', 'md', 'lg', 'xl'] },
-    status: { control: 'select', options: ['online', 'offline', 'busy', undefined] },
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+export const Vertical: Story = {
+  args: {
+    direction: "vertical",
+    gap: "md",
   },
-  args: { name: 'Alice Keeper' },
-};
-export default avatarMeta;
-type AvatarStory = StoryObj<typeof Avatar>;
-
-export const Initials:    AvatarStory = {};
-export const AllSizes:    AvatarStory = {
-  render: () => (
-    <Stack direction="row" gap={4} align="center">
-      {(['xs','sm','md','lg','xl'] as const).map(s => <Avatar key={s} name="Alice Keeper" size={s} />)}
-    </Stack>
-  ),
-};
-export const WithStatus:  AvatarStory = { args: { status: 'online' } };
-export const AllVariants: AvatarStory = {
-  render: () => (
-    <Stack direction="row" gap={4} align="center">
-      <Avatar name="Alice Keeper" status="online"  />
-      <Avatar name="Bob Vault"    status="offline" />
-      <Avatar name="Carol APY"    status="busy"    />
+  render: (args) => (
+    <Stack {...args}>
+      <div style={{ padding: "16px", background: "#f0f0f0" }}>Item 1</div>
+      <div style={{ padding: "16px", background: "#f0f0f0" }}>Item 2</div>
+      <div style={{ padding: "16px", background: "#f0f0f0" }}>Item 3</div>
     </Stack>
   ),
 };
 
-// ── Divider ───────────────────────────────────────────────────────────────
-export const DividerStory = {
-  title: 'Layout/Divider',
+export const Horizontal: Story = {
+  args: {
+    direction: "horizontal",
+    gap: "md",
+  },
+  render: (args) => (
+    <Stack {...args}>
+      <div style={{ padding: "16px", background: "#f0f0f0" }}>Item 1</div>
+      <div style={{ padding: "16px", background: "#f0f0f0" }}>Item 2</div>
+      <div style={{ padding: "16px", background: "#f0f0f0" }}>Item 3</div>
+    </Stack>
+  ),
+};
+
+export const WithGaps: Story = {
   render: () => (
-    <div style={{ width: 320 }}>
-      <p style={{ color: 'var(--color-text-muted)' }}>Section A</p>
-      <Divider />
-      <p style={{ color: 'var(--color-text-muted)' }}>Section B</p>
-      <Divider label="OR" />
-      <p style={{ color: 'var(--color-text-muted)' }}>Section C</p>
-    </div>
+    <>
+      <Stack direction="vertical" gap="xs">
+        <div>Extra Small Gap</div>
+        <div style={{ padding: "8px", background: "#f0f0f0" }}>Item</div>
+        <div style={{ padding: "8px", background: "#f0f0f0" }}>Item</div>
+      </Stack>
+      <Spacer size="lg" />
+      <Stack direction="vertical" gap="xl">
+        <div>Extra Large Gap</div>
+        <div style={{ padding: "8px", background: "#f0f0f0" }}>Item</div>
+        <div style={{ padding: "8px", background: "#f0f0f0" }}>Item</div>
+      </Stack>
+    </>
+  ),
+};
+
+export const GridExample: Story = {
+  render: () => (
+    <Grid columns={3} gap="md">
+      {[1, 2, 3, 4, 5, 6].map((i) => (
+        <div key={i} style={{ padding: "24px", background: "#e0e0e0", textAlign: "center" }}>
+          Card {i}
+        </div>
+      ))}
+    </Grid>
+  ),
+};
+
+export const FlexExample: Story = {
+  render: () => (
+    <>
+      <Flex justifyContent="space-between" alignItems="center">
+        <div>Left</div>
+        <div>Center</div>
+        <div>Right</div>
+      </Flex>
+      <Spacer size="lg" />
+      <Flex direction="column" gap="8px">
+        <div style={{ padding: "12px", background: "#f0f0f0" }}>Flex Column</div>
+        <div style={{ padding: "12px", background: "#f0f0f0" }}>Item 2</div>
+      </Flex>
+    </>
+  ),
+};
+
+export const ContainerExample: Story = {
+  render: () => (
+    <Container size="md" padding centered>
+      <div style={{ background: "#f0f0f0", padding: "24px", textAlign: "center" }}>
+        Centered Container (MD)
+      </div>
+    </Container>
   ),
 };

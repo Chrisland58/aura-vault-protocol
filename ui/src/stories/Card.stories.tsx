@@ -1,34 +1,28 @@
-import type { Meta, StoryObj } from '@storybook/react';
-import { Card, Stat, Button } from '../components/ds';
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { Card } from "../components/Primitives";
 
-// ── Card ──────────────────────────────────────────────────────────────────
-const cardMeta: Meta<typeof Card> = {
-  title: 'Layout/Card',
+/**
+ * `Card` is a surface container for grouping related content.
+ *
+ * ## Accessibility
+ * - Purely visual — no ARIA role added by default
+ * - Add `role="region"` and `aria-label` if the card acts as a landmark
+ */
+const meta = {
+  title: "Primitives/Card",
   component: Card,
-  tags: ['autodocs'],
+  parameters: { layout: "centered" },
+  tags: ["autodocs"],
   argTypes: {
-    variant: { control: 'select', options: ['default', 'raised', 'bordered'] },
-    padding: { control: 'select', options: ['none', 'sm', 'md', 'lg'] },
+    padding:  { control: "select", options: ["sm","md","lg"] },
+    elevated: { control: "boolean" },
   },
-  args: { children: 'Card content goes here' },
-};
-export default cardMeta;
-type CardStory = StoryObj<typeof Card>;
+  decorators: [(Story: React.FC) => <div style={{ width: "320px" }}><Story /></div>],
+} satisfies Meta<typeof Card>;
+export default meta;
+type Story = StoryObj<typeof meta>;
 
-export const Default:  CardStory = { args: { variant: 'default' } };
-export const Raised:   CardStory = { args: { variant: 'raised' } };
-export const Bordered: CardStory = { args: { variant: 'bordered' } };
-export const WithHeader: CardStory = {
-  args: {
-    header: <div style={{ fontWeight: 600 }}>Vault Overview</div>,
-    children: <Stat label="Total Value Locked" value="$2,413,887" delta={4.2} deltaLabel="24h" />,
-  },
-};
-export const WithHeaderFooter: CardStory = {
-  args: {
-    variant: 'bordered',
-    header: <div style={{ fontWeight: 600 }}>Pending Harvest</div>,
-    children: <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--text-sm)' }}>47.3 USDC available to harvest from the yield pool.</p>,
-    footer: <Button size="sm" variant="primary">Harvest Now</Button>,
-  },
-};
+export const Default:      Story = { args: { children: "Card content goes here.", padding: "md" } };
+export const Elevated:     Story = { args: { children: "Elevated card with shadow.", elevated: true } };
+export const SmallPadding: Story = { args: { children: "Compact card.", padding: "sm" } };
+export const LargePadding: Story = { args: { children: "Spacious card.", padding: "lg" } };

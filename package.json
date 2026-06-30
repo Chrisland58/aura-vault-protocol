@@ -1,0 +1,20 @@
+{
+  "name": "aura-vault-protocol",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "cy:open": "cypress open",
+    "cy:run": "cypress run",
+    "cy:run:chrome": "cypress run --browser chrome",
+    "cy:run:firefox": "cypress run --browser firefox",
+    "cy:run:edge": "cypress run --browser edge",
+    "pw:install": "playwright install --with-deps",
+    "pw:test": "playwright test",
+    "pw:test:ui": "playwright test --ui",
+    "pw:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.44.0",
+    "cypress": "^13.13.0"
+  }
+}

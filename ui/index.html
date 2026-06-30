@@ -6,6 +6,16 @@
     <meta name="theme-color" content="#0f1117" />
     <title>Aura Vault</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- DNS prefetch for any external resources -->
+    <link rel="dns-prefetch" href="https://horizon.stellar.org" />
+    <link rel="preconnect" href="https://horizon.stellar.org" crossorigin />
+    <!-- Preload critical CSS -->
+    <link rel="preload" href="/src/styles/global.css" as="style" />
+    <!-- Prevent layout shift: reserve space for app shell -->
+    <style>
+      #root { min-height: 100vh; }
+      body { margin: 0; background: #0f1117; }
+    </style>
   </head>
   <body>
     <div id="root"></div>
