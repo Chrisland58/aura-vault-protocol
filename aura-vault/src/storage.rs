@@ -18,6 +18,17 @@ pub enum DataKey {
     LastMgmtFeeTime,
     /// Whitelisted alternative yield tokens (Issue #48)
     YieldToken(Address),
+    /// Monotonically increasing distribution epoch counter.
+    DistributionEpoch,
+    /// Cumulative yield-per-share (in underlying token stroops) scaled by
+    /// YIELD_PRECISION, updated on each distribution. Using a global
+    /// accumulator avoids per-user O(n) writes and keeps gas bounded.
+    CumulativeYieldPerShare,
+    /// The last cumulative-yield-per-share snapshot at which `addr` settled.
+    /// Stored in persistent storage so it survives archival bumps.
+    UserYieldCheckpoint(Address),
+    /// Accrued but uncollected yield for `addr` (underlying token stroops).
+    UserPendingYield(Address),
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -197,4 +208,99 @@ pub fn is_paused(env: &Env) -> bool {
 
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&DataKey::Paused, &paused);
+}
+
+// ---------------------------------------------------------------------------
+// Yield-distribution helpers (instance + persistent storage)
+//
+// Design: global accumulator pattern (a.k.a. "dividends per share" or
+// "reward-debt" pattern from Sushi/Compound).  No per-user O(n) writes.
+//
+//   cumulative_yps  += net_yield * YIELD_PRECISION / total_shares
+//   user_pending    += user_shares * (cumulative_yps - user_checkpoint) / YIELD_PRECISION
+//   user_checkpoint  = cumulative_yps
+//
+// YIELD_PRECISION = 1_000_000_000_000 (1e12) gives 12 significant digits of
+// sub-share precision while staying safely inside i128 range:
+//   max(cumulative_yps) = i128::MAX / total_shares
+//   For total_shares = 1 (worst case), headroom is ~1.7e38 / 1e12 ≈ 1.7e26
+//   years of continuous yield — effectively unbounded for any realistic vault.
+// ---------------------------------------------------------------------------
+
+/// Fixed-point precision multiplier for cumulative-yield-per-share.
+pub const YIELD_PRECISION: i128 = 1_000_000_000_000; // 1e12
+
+pub fn get_distribution_epoch(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::DistributionEpoch)
+        .unwrap_or(0)
+}
+
+pub fn set_distribution_epoch(env: &Env, epoch: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::DistributionEpoch, &epoch);
+}
+
+/// Global cumulative yield-per-share (scaled by YIELD_PRECISION).
+pub fn get_cumulative_yps(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::CumulativeYieldPerShare)
+        .unwrap_or(0)
+}
+
+pub fn set_cumulative_yps(env: &Env, val: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::CumulativeYieldPerShare, &val);
+}
+
+/// The cumulative-yps value at which `addr` last settled their yield.
+pub fn get_user_checkpoint(env: &Env, addr: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserYieldCheckpoint(addr.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_user_checkpoint(env: &Env, addr: &Address, val: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserYieldCheckpoint(addr.clone()), &val);
+}
+
+/// Bump TTL for user yield checkpoint & pending yield records.
+pub fn bump_user_yield(env: &Env, addr: &Address) {
+    let key_cp = DataKey::UserYieldCheckpoint(addr.clone());
+    let key_py = DataKey::UserPendingYield(addr.clone());
+    if env.storage().persistent().has(&key_cp) {
+        env.storage().persistent().extend_ttl(
+            &key_cp,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+    }
+    if env.storage().persistent().has(&key_py) {
+        env.storage().persistent().extend_ttl(
+            &key_py,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+    }
+}
+
+/// Accrued but uncollected yield for `addr` (underlying token stroops).
+pub fn get_user_pending_yield(env: &Env, addr: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserPendingYield(addr.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_user_pending_yield(env: &Env, addr: &Address, val: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserPendingYield(addr.clone()), &val);
 }

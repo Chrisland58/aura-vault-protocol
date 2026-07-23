@@ -18,4 +18,10 @@ pub enum VaultError {
     StorageLayoutMismatch  = 10,
     VaultPaused            = 11,
     BalanceMismatch        = 12,
+    /// Yield amount is too small to distribute with at least 0.01% accuracy
+    /// relative to total shares (net yield rounds to zero stroop per share).
+    YieldTooSmall          = 13,
+    /// Post-distribution accuracy check: the distributed amount deviates more
+    /// than the allowed 0.01% tolerance from the requested yield_amount.
+    DistributionAccuracyError = 14,
 }
