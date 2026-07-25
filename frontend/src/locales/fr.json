@@ -1,0 +1,76 @@
+{
+  "nav": {
+    "faq": "FAQ",
+    "settings": "Paramètres"
+  },
+  "home": {
+    "get_started": "Pour commencer, modifiez le fichier page.tsx.",
+    "instructions": "Vous cherchez un point de départ ou plus d'instructions ? Consultez",
+    "templates": "Modèles",
+    "or_the": "ou le",
+    "learning_center": "Centre d'apprentissage",
+    "deploy_now": "Déployer maintenant",
+    "documentation": "Documentation"
+  },
+  "faq": {
+    "title": "Foire aux Questions",
+    "subtitle": "Tout ce que vous devez savoir sur Aura Vault Protocol.",
+    "search_placeholder": "Rechercher des questions…",
+    "all_categories": "Toutes",
+    "no_results": "Aucun résultat trouvé.",
+    "cant_find": "Vous ne trouvez pas votre réponse ?",
+    "open_issue": "Ouvrez un ticket GitHub"
+  },
+  "settings": {
+    "title": "Paramètres",
+    "saved": "Paramètres enregistrés",
+    "appearance": {
+      "title": "Apparence",
+      "description": "Choisissez votre thème de couleur préféré."
+    },
+    "wallet": {
+      "title": "Portefeuille Connecté",
+      "no_wallet": "Aucun portefeuille connecté",
+      "connect": "Connecter le Portefeuille"
+    },
+    "slippage": {
+      "title": "Tolérance au Glissement",
+      "high_warning": "Un glissement élevé peut entraîner des transactions défavorables"
+    },
+    "notifications": {
+      "title": "Notifications",
+      "deposits": "Confirmations de dépôt",
+      "withdrawals": "Confirmations de retrait",
+      "vault_events": "Alertes de performance du vault",
+      "email": "Notifications par e-mail",
+      "email_address": "Adresse e-mail",
+      "email_placeholder": "vous@exemple.com"
+    },
+    "security": {
+      "title": "Sécurité",
+      "two_factor": "Authentification à Deux Facteurs",
+      "two_factor_desc": "Ajoutez une couche de sécurité supplémentaire"
+    },
+    "danger": {
+      "title": "Zone Dangereuse",
+      "description": "La désactivation de votre compte supprimera toutes les données et ne peut être annulée.",
+      "deactivate": "Désactiver le Compte",
+      "confirm_message": "Êtes-vous sûr ? Cette action est irréversible.",
+      "cancel": "Annuler",
+      "confirm": "Confirmer la Désactivation"
+    }
+  },
+  "notifications": {
+    "title": "Notifications",
+    "mark_all_read": "Tout marquer comme lu",
+    "clear": "Effacer",
+    "empty": "Aucune notification",
+    "unread_aria": "Notifications, {{count}} non lues",
+    "dismiss": "Ignorer la notification"
+  },
+  "theme": {
+    "light": "Clair",
+    "dark": "Sombre",
+    "auto": "Auto"
+  }
+}

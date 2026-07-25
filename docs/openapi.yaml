@@ -1,0 +1,1595 @@
+openapi: 3.0.3
+
+info:
+  title: Aura Vault — REST API
+  version: "1.0.0"
+  description: |
+    Backend REST API for the Aura Vault Protocol.
+
+    ## Authentication
+    All protected endpoints require a Bearer JWT access token obtained from
+    `POST /api/auth/login`.  Access tokens expire after **15 minutes**.
+    Use `POST /api/auth/refresh` to obtain a new pair without re-authenticating.
+
+    ## Rate Limiting
+    Auth endpoints (`/api/auth/*`) are limited to **20 requests per 15 minutes**
+    per IP address.  Exceeding this returns `429 Too Many Requests`.
+
+    ## Base URL
+    | Environment | Base URL |
+    |---|---|
+    | Local | `http://localhost:3001` |
+    | Testnet | `https://api-testnet.auravault.xyz` |
+    | Mainnet | `https://api.auravault.xyz` |
+
+servers:
+  - url: http://localhost:3001
+    description: Local development
+  - url: https://api-testnet.auravault.xyz
+    description: Stellar Testnet
+  - url: https://api.auravault.xyz
+    description: Stellar Mainnet
+
+tags:
+  - name: Auth
+    description: Wallet-based authentication and session management
+  - name: Health
+    description: Service health checks
+  - name: Portfolio
+    description: User vault positions and balances
+  - name: Yield
+    description: Yield calculation and worker statistics
+  - name: Gas
+    description: EVM gas price estimation
+  - name: Withdrawal
+    description: Vault withdrawal initiation and queue management
+  - name: Queue
+    description: Internal job queue monitoring
+  - name: Webhooks
+    description: Vault event webhook subscriptions
+  - name: Email
+    description: Transactional email delivery and tracking
+
+paths:
+  # ---------------------------------------------------------------------------
+  # Auth
+  # ---------------------------------------------------------------------------
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with wallet address
+      description: |
+        Authenticate using a Stellar wallet address.  Returns an access token
+        (15 min expiry) and a refresh token (30 days expiry).
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              walletAddress: "GABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOPQRST"
+              deviceId: "device-uuid-1234"
+      responses:
+        "200":
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+              example:
+                accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                refreshToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                expiresIn: 900
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      description: |
+        Exchange a valid refresh token for a new access + refresh token pair.
+        The old refresh token is invalidated (token rotation).
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+            example:
+              refreshToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+      responses:
+        "200":
+          description: New token pair issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout current session
+      description: |
+        Blacklists the current access token and (optionally) revokes the
+        provided refresh token.  The access token must be supplied as a
+        Bearer token in the `Authorization` header.
+      operationId: logout
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogoutRequest"
+            example:
+              refreshToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+      responses:
+        "200":
+          description: Logged out successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+              example:
+                success: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/auth/sessions:
+    get:
+      tags: [Auth]
+      summary: List active sessions
+      description: |
+        Returns the list of active session IDs for the authenticated wallet.
+        Useful for multi-device session management.
+      operationId: getSessions
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionsResponse"
+              example:
+                sessions:
+                  - "550e8400-e29b-41d4-a716-446655440000"
+                  - "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/auth/revoke-all:
+    post:
+      tags: [Auth]
+      summary: Revoke all sessions
+      description: |
+        Invalidates every active session for the authenticated wallet.
+        Use this when a device is lost or compromised.
+      operationId: revokeAllSessions
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: All sessions revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+              example:
+                success: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------------------------------------------------------------------------
+  # Health
+  # ---------------------------------------------------------------------------
+  /api/health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns the service status and current server timestamp. No authentication required.
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: "ok"
+                timestamp: "2026-06-25T13:00:00.000Z"
+
+  # ---------------------------------------------------------------------------
+  # Portfolio
+  # ---------------------------------------------------------------------------
+  /api/v1/user/portfolio:
+    get:
+      tags: [Portfolio]
+      summary: Get user portfolio
+      description: |
+        Returns all vault positions for the authenticated wallet, including share
+        balances, underlying token values, APY, and yield earned.  Results are
+        cached for 30 seconds per user.
+      operationId: getPortfolio
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: Page number (1-based).
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: Results per page (max 100).
+      responses:
+        "200":
+          description: Portfolio data
+          headers:
+            X-Cache:
+              schema: { type: string, enum: [HIT, MISS] }
+              description: Indicates whether the response was served from cache.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortfolioResponse"
+              example:
+                userId: "GABCDE..."
+                totalBalance: "1050"
+                positions:
+                  - contractId: "CAURA_VAULT_TESTNET"
+                    shares: "1000"
+                    underlyingBalance: "1050"
+                    apy: 8.5
+                    yieldEarned: "50"
+                pagination: { page: 1, pageSize: 20, total: 1 }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  # ---------------------------------------------------------------------------
+  # Yield
+  # ---------------------------------------------------------------------------
+  /api/v1/yield/calculate:
+    post:
+      tags: [Yield]
+      summary: Calculate yield for positions
+      description: |
+        Processes a batch of vault positions against yield sources and returns
+        calculated yield results for a given date (defaults to now).
+      operationId: calculateYield
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/YieldCalculateRequest"
+            example:
+              positions:
+                - walletAddress: "GABCDE..."
+                  contractId: "CAURA_VAULT_TESTNET"
+                  shares: "1000"
+              sources:
+                - id: "source-1"
+                  apy: 8.5
+              calcDate: "2026-06-28T00:00:00.000Z"
+      responses:
+        "200":
+          description: Yield calculation results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/YieldCalculateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/yield/backfill:
+    post:
+      tags: [Yield]
+      summary: Backfill yield calculations
+      description: |
+        Re-calculates yield for a historical date range.  Returns one result
+        slot per calendar day between `startDate` and `endDate` (inclusive).
+      operationId: backfillYield
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/YieldBackfillRequest"
+            example:
+              positions:
+                - walletAddress: "GABCDE..."
+                  contractId: "CAURA_VAULT_TESTNET"
+                  shares: "1000"
+              sources:
+                - id: "source-1"
+                  apy: 8.5
+              startDate: "2026-06-01T00:00:00.000Z"
+              endDate: "2026-06-28T00:00:00.000Z"
+      responses:
+        "200":
+          description: Backfill results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/YieldBackfillResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/yield/stats:
+    get:
+      tags: [Yield]
+      summary: Yield worker stats
+      description: |
+        Returns the last scheduled worker run statistics.  Pass `?history=N`
+        to include the last N run records (max 200).
+      operationId: getYieldStats
+      parameters:
+        - name: history
+          in: query
+          schema: { type: integer, default: 0, minimum: 0, maximum: 200 }
+          description: Number of historical run records to include.
+      responses:
+        "200":
+          description: Yield worker stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/YieldStatsResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Gas
+  # ---------------------------------------------------------------------------
+  /api/v1/gas/prices:
+    get:
+      tags: [Gas]
+      summary: Get gas price estimates
+      description: |
+        Returns Low / Standard / Fast fee tiers for the requested EVM chain.
+        Results are cached for 1 minute.  Pass `forceRefresh=true` to bypass
+        the cache.
+      operationId: getGasPrices
+      parameters:
+        - name: chainId
+          in: query
+          schema: { type: integer, default: 1 }
+          description: EVM chain ID (default 1 = Ethereum mainnet).
+        - name: gasLimit
+          in: query
+          schema: { type: string }
+          description: Optional gas limit (uint256 string) to include cost estimates.
+        - name: forceRefresh
+          in: query
+          schema: { type: boolean, default: false }
+          description: Bypass the 1-minute cache.
+      responses:
+        "200":
+          description: Gas price tiers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GasPriceEstimate"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/gas/history:
+    get:
+      tags: [Gas]
+      summary: Gas price history
+      description: Returns recent sampled gas prices for the requested chain (max 50 records).
+      operationId: getGasHistory
+      parameters:
+        - name: chainId
+          in: query
+          schema: { type: integer, default: 1 }
+          description: EVM chain ID.
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, minimum: 1, maximum: 50 }
+          description: Number of samples to return.
+      responses:
+        "200":
+          description: Gas price history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GasHistoryResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Withdrawal
+  # ---------------------------------------------------------------------------
+  /api/v1/withdraw:
+    post:
+      tags: [Withdrawal]
+      summary: Initiate withdrawal
+      description: |
+        For small withdrawals (≤ 100,000 shares) returns unsigned Soroban
+        transaction parameters for the client to sign.  Large withdrawals are
+        queued and return a `jobId` for status polling.
+      operationId: initiateWithdrawal
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalRequest"
+            example:
+              walletAddress: "GABCDE..."
+              shares: "500"
+              contractId: "CAURA_VAULT_TESTNET"
+      responses:
+        "200":
+          description: Immediate withdrawal — unsigned tx params returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalImmediateResponse"
+        "202":
+          description: Large withdrawal queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalQueuedResponse"
+              example:
+                queued: true
+                jobId: "550e8400-e29b-41d4-a716-446655440000"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/withdraw/queue/stats:
+    get:
+      tags: [Withdrawal]
+      summary: Withdrawal queue stats
+      description: Returns current queue depth and worker status for withdrawal processing.
+      operationId: getWithdrawalQueueStats
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Queue statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueueStats"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/withdraw/{jobId}:
+    get:
+      tags: [Withdrawal]
+      summary: Get withdrawal job status
+      description: Poll the status of a queued large withdrawal.
+      operationId: getWithdrawalJob
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalJob"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ---------------------------------------------------------------------------
+  # Queue
+  # ---------------------------------------------------------------------------
+  /api/v1/queue/metrics:
+    get:
+      tags: [Queue]
+      summary: Queue metrics
+      description: Returns health metrics for the internal job queue (active, waiting, completed, failed counts).
+      operationId: getQueueMetrics
+      responses:
+        "200":
+          description: Queue metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueueMetrics"
+
+  /api/v1/queue/dashboard:
+    get:
+      tags: [Queue]
+      summary: Queue dashboard
+      description: Extended metrics plus recent active, waiting, completed, and dead-letter jobs.
+      operationId: getQueueDashboard
+      responses:
+        "200":
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueueDashboard"
+
+  /api/v1/queue/jobs/{id}:
+    get:
+      tags: [Queue]
+      summary: Get job by ID
+      description: Returns full job details including status, payload, and attempt count.
+      operationId: getQueueJob
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/queue/dlq:
+    get:
+      tags: [Queue]
+      summary: Dead-letter queue
+      description: Returns all jobs that have exhausted retry attempts.
+      operationId: getDeadLetterQueue
+      responses:
+        "200":
+          description: Dead-letter jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Job"
+
+  # ---------------------------------------------------------------------------
+  # Webhooks
+  # ---------------------------------------------------------------------------
+  /api/webhooks:
+    get:
+      tags: [Webhooks]
+      summary: List webhook endpoints
+      description: Returns all registered webhook endpoints for the authenticated account (secret omitted).
+      operationId: listWebhooks
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Webhook endpoints
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WebhookEndpoint"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags: [Webhooks]
+      summary: Register webhook endpoint
+      description: |
+        Register a URL to receive vault contract events.  Pass an empty
+        `events` array to subscribe to all event types.
+      operationId: createWebhook
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookCreateRequest"
+            example:
+              url: "https://example.com/hooks/aura"
+              secret: "my-webhook-secret"
+              events: ["deposit", "withdraw"]
+      responses:
+        "201":
+          description: Webhook registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/webhooks/{id}:
+    get:
+      tags: [Webhooks]
+      summary: Get webhook endpoint
+      operationId: getWebhook
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Webhook endpoint details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      tags: [Webhooks]
+      summary: Update webhook endpoint
+      description: Update the URL, secret, or subscribed event types.
+      operationId: updateWebhook
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookUpdateRequest"
+      responses:
+        "200":
+          description: Updated endpoint
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Webhooks]
+      summary: Delete webhook endpoint
+      operationId: deleteWebhook
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/webhooks/{id}/deliveries:
+    get:
+      tags: [Webhooks]
+      summary: Get delivery history
+      description: Returns all delivery attempts for a registered webhook endpoint.
+      operationId: getWebhookDeliveries
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Delivery records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DeliveryRecord"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/webhooks/verify:
+    post:
+      tags: [Webhooks]
+      summary: Verify webhook signature
+      description: Utility endpoint to verify an incoming webhook HMAC-SHA256 signature.
+      operationId: verifyWebhookSignature
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookVerifyRequest"
+            example:
+              secret: "my-webhook-secret"
+              body: '{"id":"abc","type":"deposit"}'
+              signature: "sha256=abc123..."
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------------------------------------------------------------------------
+  # Email
+  # ---------------------------------------------------------------------------
+  /api/email/send:
+    post:
+      tags: [Email]
+      summary: Send transactional email
+      description: Enqueue a single transactional email for delivery. Requires authentication.
+      operationId: sendEmail
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailSendRequest"
+            example:
+              to: "user@example.com"
+              template: "deposit-confirmation"
+              data:
+                amount: "1000"
+                txHash: "abc123"
+      responses:
+        "202":
+          description: Email queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailQueuedResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/email/send/bulk:
+    post:
+      tags: [Email]
+      summary: Send bulk emails
+      description: Enqueue multiple transactional emails in a single request. Requires authentication.
+      operationId: sendBulkEmail
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailBulkRequest"
+      responses:
+        "202":
+          description: Emails queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailBulkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/email/unsubscribe:
+    get:
+      tags: [Email]
+      summary: Unsubscribe via email link
+      description: |
+        One-click unsubscribe link embedded in every outgoing email.
+        The `token` is HMAC-signed and encodes the recipient address.
+      operationId: emailUnsubscribe
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+          description: HMAC-signed unsubscribe token from the email link.
+      responses:
+        "200":
+          description: Unsubscribed successfully (HTML page returned)
+          content:
+            text/html:
+              schema: { type: string }
+        "400":
+          description: Invalid or expired token
+
+  /api/email/webhooks/sendgrid:
+    post:
+      tags: [Email]
+      summary: SendGrid event webhook
+      description: |
+        Receives SendGrid Event Webhooks for bounces, spam reports, and
+        unsubscribes.  Verified via HMAC-SHA256 signature header.
+      operationId: sendgridWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/SendgridEvent"
+      responses:
+        "200":
+          description: Events processed
+        "401":
+          description: Invalid webhook signature
+
+  /api/email/webhooks/mailgun:
+    post:
+      tags: [Email]
+      summary: Mailgun event webhook
+      description: |
+        Receives Mailgun event webhooks for failures and unsubscribes.
+        Verified via HMAC-SHA256 signature.
+      operationId: mailgunWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MailgunWebhookPayload"
+      responses:
+        "200":
+          description: Event processed
+        "401":
+          description: Invalid webhook signature
+
+  /api/email/stats:
+    get:
+      tags: [Email]
+      summary: Email queue stats
+      description: Returns current email queue depth and delivery stats. Requires authentication.
+      operationId: getEmailStats
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Queue stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailStatsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/email/track/open/{trackingId}:
+    get:
+      tags: [Email]
+      summary: Track email open
+      description: Returns a 1×1 transparent GIF and records the open event.
+      operationId: trackEmailOpen
+      parameters:
+        - name: trackingId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Tracking pixel (1×1 GIF)
+          content:
+            image/gif:
+              schema: { type: string, format: binary }
+
+  /api/email/track/click/{trackingId}:
+    get:
+      tags: [Email]
+      summary: Track email click
+      description: Records the click event and redirects to the target URL.
+      operationId: trackEmailClick
+      parameters:
+        - name: trackingId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: url
+          in: query
+          required: true
+          schema: { type: string, format: uri }
+      responses:
+        "302":
+          description: Redirects to the destination URL
+        "400":
+          description: Invalid redirect URL
+
+  /api/email/track/{trackingId}/events:
+    get:
+      tags: [Email]
+      summary: Get tracking events
+      description: Returns all open/click events for a specific tracked email. Requires authentication.
+      operationId: getEmailTrackingEvents
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: trackingId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Tracking events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackingEventsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/email/dns:
+    get:
+      tags: [Email]
+      summary: Verify DNS configuration
+      description: Checks DKIM, SPF, and DMARC DNS records for the sending domain. Requires authentication.
+      operationId: verifyEmailDns
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: domain
+          in: query
+          required: true
+          schema: { type: string }
+          description: Sending domain to verify (e.g. `auravault.io`).
+        - name: selector
+          in: query
+          schema: { type: string, default: "s1" }
+          description: DKIM selector.
+      responses:
+        "200":
+          description: DNS verification results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DnsVerificationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+# ---------------------------------------------------------------------------
+# Components
+# ---------------------------------------------------------------------------
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT access token obtained from `POST /api/auth/login`.
+        Pass as `Authorization: Bearer <token>`.
+
+  schemas:
+    LoginRequest:
+      type: object
+      required: [walletAddress]
+      properties:
+        walletAddress:
+          type: string
+          description: Stellar public key (G... address) of the authenticating wallet.
+          example: "GABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOPQRST"
+        deviceId:
+          type: string
+          description: Optional device identifier for multi-device session tracking.
+          example: "device-uuid-1234"
+
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+          description: A valid, non-expired refresh token.
+
+    LogoutRequest:
+      type: object
+      properties:
+        refreshToken:
+          type: string
+          description: Optional refresh token to also invalidate on logout.
+
+    TokenPair:
+      type: object
+      required: [accessToken, refreshToken, expiresIn]
+      properties:
+        accessToken:
+          type: string
+          description: Short-lived JWT for authenticating API requests (15 min).
+        refreshToken:
+          type: string
+          description: Long-lived JWT for obtaining new access tokens (30 days).
+        expiresIn:
+          type: integer
+          description: Access token lifetime in seconds.
+          example: 900
+
+    SessionsResponse:
+      type: object
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: List of active session IDs for the authenticated wallet.
+
+    SuccessResponse:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          example: true
+
+    HealthResponse:
+      type: object
+      required: [status, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          example: ok
+        timestamp:
+          type: string
+          format: date-time
+          description: Server UTC timestamp at time of request.
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+          example: "walletAddress required"
+
+  responses:
+    BadRequest:
+      description: Invalid or missing request parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "walletAddress required"
+
+    Unauthorized:
+      description: Missing, invalid, or expired token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            MissingToken:
+              value:
+                error: "Missing token"
+            InvalidToken:
+              value:
+                error: "Invalid or expired token"
+            ExpiredRefresh:
+              value:
+                error: "Invalid or expired refresh token"
+
+    RateLimited:
+      description: Too many requests — auth rate limit exceeded (20 req / 15 min)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "Too many auth requests, try again later"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "not found"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "Internal server error"
+
+  # ── Additional schemas ────────────────────────────────────────────────────
+
+    VaultPosition:
+      type: object
+      required: [contractId, shares, underlyingBalance, apy, yieldEarned]
+      properties:
+        contractId:
+          type: string
+          description: Soroban vault contract ID.
+          example: "CAURA_VAULT_TESTNET"
+        shares:
+          type: string
+          description: User's vault share balance (i128 as string).
+          example: "1000"
+        underlyingBalance:
+          type: string
+          description: Redeemable underlying token amount (i128 as string).
+          example: "1050"
+        apy:
+          type: number
+          format: double
+          description: Current annualised percentage yield.
+          example: 8.5
+        yieldEarned:
+          type: string
+          description: Yield earned since deposit (i128 as string).
+          example: "50"
+
+    PortfolioResponse:
+      type: object
+      required: [userId, totalBalance, positions, pagination]
+      properties:
+        userId:
+          type: string
+          description: Authenticated wallet address (Stellar G... key).
+        totalBalance:
+          type: string
+          description: Sum of all underlying balances across positions.
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/VaultPosition"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    Pagination:
+      type: object
+      required: [page, pageSize, total]
+      properties:
+        page: { type: integer, example: 1 }
+        pageSize: { type: integer, example: 20 }
+        total: { type: integer, example: 1 }
+
+    YieldSource:
+      type: object
+      required: [id, apy]
+      properties:
+        id: { type: string }
+        apy: { type: number, format: double }
+
+    YieldPositionInput:
+      type: object
+      required: [walletAddress, contractId, shares]
+      properties:
+        walletAddress: { type: string }
+        contractId: { type: string }
+        shares: { type: string }
+
+    YieldCalculateRequest:
+      type: object
+      required: [positions, sources]
+      properties:
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/YieldPositionInput"
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/YieldSource"
+        calcDate:
+          type: string
+          format: date-time
+          description: Date to calculate for (defaults to now).
+
+    YieldCalculateResponse:
+      type: object
+      description: Batch yield calculation result (structure mirrors yieldService.processBatch output).
+      additionalProperties: true
+
+    YieldBackfillRequest:
+      type: object
+      required: [positions, sources, startDate, endDate]
+      properties:
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/YieldPositionInput"
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/YieldSource"
+        startDate:
+          type: string
+          format: date-time
+        endDate:
+          type: string
+          format: date-time
+
+    YieldBackfillResponse:
+      type: object
+      required: [slots, results]
+      properties:
+        slots:
+          type: integer
+          description: Number of date slots processed.
+        results:
+          type: array
+          items: {}
+
+    YieldStatsResponse:
+      type: object
+      required: [workerRunning]
+      properties:
+        workerRunning:
+          type: boolean
+        lastRun:
+          type: object
+          nullable: true
+          additionalProperties: true
+        history:
+          type: array
+          nullable: true
+          items:
+            type: object
+            additionalProperties: true
+
+    GasFeeOption:
+      type: object
+      required: [maxFeePerGas, maxPriorityFeePerGas]
+      properties:
+        maxFeePerGas:
+          type: string
+          description: Max fee per gas in wei (uint256 string).
+        maxPriorityFeePerGas:
+          type: string
+          description: Max priority fee per gas in wei (uint256 string).
+        estimatedCostWei:
+          type: string
+          nullable: true
+          description: Estimated total cost in wei if gasLimit was provided.
+
+    GasPriceEstimate:
+      type: object
+      required: [chainId, low, standard, fast, timestamp]
+      properties:
+        chainId: { type: integer }
+        low:
+          $ref: "#/components/schemas/GasFeeOption"
+        standard:
+          $ref: "#/components/schemas/GasFeeOption"
+        fast:
+          $ref: "#/components/schemas/GasFeeOption"
+        timestamp:
+          type: string
+          format: date-time
+
+    GasHistoryResponse:
+      type: object
+      required: [chainId, history]
+      properties:
+        chainId: { type: integer }
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/GasPriceEstimate"
+
+    WithdrawalRequest:
+      type: object
+      required: [walletAddress, shares]
+      properties:
+        walletAddress: { type: string }
+        shares: { type: string }
+        contractId: { type: string }
+
+    WithdrawalImmediateResponse:
+      type: object
+      required: [immediate, txParams]
+      properties:
+        immediate:
+          type: boolean
+          example: true
+        txParams:
+          type: object
+          properties:
+            contractId: { type: string }
+            method: { type: string, example: "withdraw" }
+            args:
+              type: object
+              properties:
+                caller: { type: string }
+                shares: { type: string }
+            network: { type: string, example: "testnet" }
+
+    WithdrawalQueuedResponse:
+      type: object
+      required: [queued, jobId]
+      properties:
+        queued: { type: boolean, example: true }
+        jobId: { type: string, format: uuid }
+
+    WithdrawalJob:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, active, completed, failed]
+        walletAddress: { type: string }
+        shares: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    QueueStats:
+      type: object
+      additionalProperties: true
+      description: Queue depth statistics returned by the withdrawal queue service.
+
+    QueueMetrics:
+      type: object
+      additionalProperties: true
+      description: Aggregated counts for active, waiting, completed, and failed jobs.
+
+    Job:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status:
+          type: string
+          enum: [waiting, active, completed, failed]
+        payload:
+          type: object
+          additionalProperties: true
+        attempts: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    QueueDashboard:
+      type: object
+      required: [metrics, active, waiting, recentCompleted, recentDead, timestamp]
+      properties:
+        metrics:
+          $ref: "#/components/schemas/QueueMetrics"
+        active:
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+        waiting:
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+        recentCompleted:
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+        recentDead:
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+        timestamp:
+          type: string
+          format: date-time
+
+    EventType:
+      type: string
+      enum: [deposit, withdraw, harvest, pause, unpause, upgrade, suspicious]
+
+    WebhookEndpoint:
+      type: object
+      required: [id, url, events, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string, format: uri }
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventType"
+          description: Subscribed event types. Empty array = all events.
+        createdAt: { type: string, format: date-time }
+
+    WebhookCreateRequest:
+      type: object
+      required: [url, secret]
+      properties:
+        url: { type: string, format: uri }
+        secret: { type: string, description: "HMAC signing secret (kept server-side)." }
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventType"
+          default: []
+
+    WebhookUpdateRequest:
+      type: object
+      properties:
+        url: { type: string, format: uri }
+        secret: { type: string }
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventType"
+
+    DeliveryRecord:
+      type: object
+      required: [id, endpointId, eventId, status, attempts, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        endpointId: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, success, failed]
+        attempts: { type: integer }
+        nextRetryAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastStatusCode:
+          type: integer
+          nullable: true
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    WebhookVerifyRequest:
+      type: object
+      required: [secret, body, signature]
+      properties:
+        secret: { type: string }
+        body: { type: string }
+        signature: { type: string, description: "sha256=<hex> format." }
+
+    EmailSendRequest:
+      type: object
+      required: [to, template]
+      properties:
+        to: { type: string, format: email }
+        template: { type: string, example: "deposit-confirmation" }
+        data:
+          type: object
+          additionalProperties: true
+        subject: { type: string }
+        priority: { type: integer, description: "Lower = higher priority." }
+        attachments:
+          type: array
+          items: {}
+        maxAttempts: { type: integer, default: 3 }
+
+    EmailQueuedResponse:
+      type: object
+      required: [queued, jobId]
+      properties:
+        queued: { type: boolean, example: true }
+        jobId: { type: string }
+
+    EmailBulkRequest:
+      type: object
+      required: [jobs]
+      properties:
+        jobs:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/EmailSendRequest"
+
+    EmailBulkResponse:
+      type: object
+      required: [queued, count, jobIds]
+      properties:
+        queued: { type: boolean, example: true }
+        count: { type: integer }
+        jobIds:
+          type: array
+          items: { type: string }
+
+    EmailStatsResponse:
+      type: object
+      properties:
+        queue:
+          type: object
+          additionalProperties: true
+
+    SendgridEvent:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        event:
+          type: string
+          enum: [bounce, blocked, spamreport, unsubscribe, group_unsubscribe]
+        reason: { type: string }
+
+    MailgunWebhookPayload:
+      type: object
+      properties:
+        signature:
+          type: object
+          properties:
+            timestamp: { type: string }
+            token: { type: string }
+            signature: { type: string }
+        event-data:
+          type: object
+          additionalProperties: true
+
+    TrackingEventsResponse:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string, enum: [open, click] }
+              trackingId: { type: string }
+              timestamp: { type: string, format: date-time }
+              userAgent: { type: string }
+              url: { type: string, format: uri, nullable: true }
+
+    DnsVerificationResponse:
+      type: object
+      properties:
+        dns:
+          type: object
+          additionalProperties: true

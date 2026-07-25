@@ -1,0 +1,76 @@
+{
+  "nav": {
+    "faq": "Preguntas Frecuentes",
+    "settings": "Configuración"
+  },
+  "home": {
+    "get_started": "Para comenzar, edita el archivo page.tsx.",
+    "instructions": "¿Buscas un punto de partida o más instrucciones? Ve a",
+    "templates": "Plantillas",
+    "or_the": "o al",
+    "learning_center": "Centro de aprendizaje",
+    "deploy_now": "Desplegar ahora",
+    "documentation": "Documentación"
+  },
+  "faq": {
+    "title": "Preguntas Frecuentes",
+    "subtitle": "Todo lo que necesitas saber sobre Aura Vault Protocol.",
+    "search_placeholder": "Buscar preguntas…",
+    "all_categories": "Todas",
+    "no_results": "No se encontraron resultados.",
+    "cant_find": "¿No encuentras tu respuesta?",
+    "open_issue": "Abre un issue en GitHub"
+  },
+  "settings": {
+    "title": "Configuración",
+    "saved": "Configuración guardada",
+    "appearance": {
+      "title": "Apariencia",
+      "description": "Elige tu tema de color preferido."
+    },
+    "wallet": {
+      "title": "Billetera Conectada",
+      "no_wallet": "Sin billetera conectada",
+      "connect": "Conectar Billetera"
+    },
+    "slippage": {
+      "title": "Tolerancia de Deslizamiento",
+      "high_warning": "Un deslizamiento alto puede resultar en operaciones desfavorables"
+    },
+    "notifications": {
+      "title": "Notificaciones",
+      "deposits": "Confirmaciones de depósito",
+      "withdrawals": "Confirmaciones de retiro",
+      "vault_events": "Alertas de rendimiento del vault",
+      "email": "Notificaciones por correo",
+      "email_address": "Dirección de correo",
+      "email_placeholder": "tu@ejemplo.com"
+    },
+    "security": {
+      "title": "Seguridad",
+      "two_factor": "Autenticación de Dos Factores",
+      "two_factor_desc": "Añade una capa adicional de seguridad"
+    },
+    "danger": {
+      "title": "Zona de Peligro",
+      "description": "Desactivar tu cuenta eliminará todos los datos y no se puede deshacer.",
+      "deactivate": "Desactivar Cuenta",
+      "confirm_message": "¿Estás seguro? Esta acción es irreversible.",
+      "cancel": "Cancelar",
+      "confirm": "Confirmar Desactivación"
+    }
+  },
+  "notifications": {
+    "title": "Notificaciones",
+    "mark_all_read": "Marcar todo como leído",
+    "clear": "Borrar",
+    "empty": "Sin notificaciones",
+    "unread_aria": "Notificaciones, {{count}} sin leer",
+    "dismiss": "Descartar notificación"
+  },
+  "theme": {
+    "light": "Claro",
+    "dark": "Oscuro",
+    "auto": "Auto"
+  }
+}

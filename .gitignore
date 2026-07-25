@@ -3,20 +3,11 @@ Cargo.lock
 .DS_Store
 *.wasm
 
-# ── Terraform ──────────────────────────────────────────────────────────────
-**/.terraform/
-*.tfstate
-*.tfstate.backup
-*.tfstate.*.backup
-*.tfplan
-.terraform.lock.hcl
-terraform.tfvars
-*.auto.tfvars
-# Keep example tfvars
-!*.tfvars.example
+*storybook.log
+storybook-static
 
-# ── Secrets / sensitive ────────────────────────────────────────────────────
-*.env
+# Local secrets must remain untracked.
+.env
 .env.*
-secrets/
-credentials
+!.env.example
+!*.env.example

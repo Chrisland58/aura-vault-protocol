@@ -1,23 +1,27 @@
-use soroban_sdk::{Address, BytesN, Env};
+use soroban_sdk::{Address, Env, Vec, Symbol, BytesN, String};
 use crate::errors::VaultError;
 
 /// Public ABI for AuraVault.  Implemented by the contract in lib.rs.
 #[allow(dead_code)]
 pub trait AuraVaultTrait {
-    fn initialize(env: Env, admin: Address, underlying_token: Address) -> Result<(), VaultError>;
+    fn initialize(env: Env, admin: Address, underlying_token: Address, signers: Vec<Address>) -> Result<(), VaultError>;
     fn deposit(env: Env, caller: Address, amount: i128) -> Result<i128, VaultError>;
     fn withdraw(env: Env, caller: Address, shares: i128) -> Result<i128, VaultError>;
     fn harvest(env: Env, caller: Address, yield_amount: i128) -> Result<(), VaultError>;
-    fn pause(env: Env) -> Result<(), VaultError>;
-    fn unpause(env: Env) -> Result<(), VaultError>;
+    fn pause(env: Env, admin: Address) -> Result<(), VaultError>;
+    fn unpause(env: Env, admin: Address) -> Result<(), VaultError>;
     fn is_paused(env: Env) -> bool;
+    fn set_fees(env: Env, admin: Address, perf_fee_bps: u32, mgmt_fee_bps: u32) -> Result<(), VaultError>;
+    fn set_treasury(env: Env, admin: Address, treasury: Address) -> Result<(), VaultError>;
+    fn withdraw_fees(env: Env, admin: Address) -> Result<i128, VaultError>;
+    fn total_fees_collected(env: Env) -> i128;
     fn total_assets(env: Env) -> i128;
     fn balance_of(env: Env, address: Address) -> i128;
-    /// Transfer admin role to a new address.  Only the current admin may call this.
-    fn transfer_admin(env: Env, new_admin: Address) -> Result<(), VaultError>;
-    /// UUPS-style upgrade: replace the contract's Wasm with `new_wasm_hash`.
-    /// Only the admin may call this.  Emits an `upgrade` event.
     fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), VaultError>;
-    /// Returns the current monotonic version number (starts at 1 after initialize).
-    fn version(env: Env) -> u32;
+    fn propose_update_admin(env: Env, proposer: Address, new_admin: Address) -> Result<u64, VaultError>;
+    fn propose_update_token(env: Env, proposer: Address, new_token: Address) -> Result<u64, VaultError>;
+    fn propose_parameter_update(env: Env, proposer: Address, name: Symbol, value: i128) -> Result<u64, VaultError>;
+    fn vote(env: Env, voter: Address, proposal_id: u64, approve: bool) -> Result<(), VaultError>;
+    fn execute(env: Env, executor: Address, proposal_id: u64) -> Result<(), VaultError>;
+    fn proposal_status(env: Env, proposal_id: u64) -> Option<String>;
 }
