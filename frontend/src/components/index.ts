@@ -1,5 +1,7 @@
 // Default exports
 export { default as WalletConnect } from "./WalletConnect";
+export { OnboardingChecklist, useOnboarding } from "./OnboardingChecklist";
+export type { ChecklistItemId } from "./OnboardingChecklist";
 export { default as TransactionModal } from "./TransactionModal";
 export { default as PerformanceCharts } from "./PerformanceCharts";
 export { default as TransactionHistory } from "./TransactionHistory";
