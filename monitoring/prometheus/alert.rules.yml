@@ -1,4 +1,5 @@
 groups:
+  # ── Critical service alerts ───────────────────────────────────────────────
   - name: aura-vault-critical
     rules:
       - alert: ServiceDown
@@ -6,37 +7,46 @@ groups:
         for: 1m
         labels:
           severity: critical
+          team: platform
         annotations:
           summary: "Service {{ $labels.job }} is down"
           description: "{{ $labels.instance }} has been unreachable for more than 1 minute."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/ServiceDown"
 
       - alert: HighErrorRate
         expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.05
         for: 5m
         labels:
           severity: critical
+          team: backend
         annotations:
           summary: "High error rate on {{ $labels.job }}"
           description: "Error rate is above 5% for 5 minutes (current: {{ $value | humanizePercentage }})."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/HighErrorRate"
 
       - alert: HighLatency
         expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
         for: 5m
         labels:
           severity: warning
+          team: backend
         annotations:
           summary: "High p95 latency on {{ $labels.job }}"
           description: "95th percentile latency is above 2 seconds (current: {{ $value }}s)."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/HighLatency"
 
       - alert: HighMemoryUsage
         expr: process_resident_memory_bytes / 1024 / 1024 > 512
         for: 10m
         labels:
           severity: warning
+          team: platform
         annotations:
           summary: "High memory usage on {{ $labels.job }}"
           description: "Memory usage is above 512MB for 10 minutes."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/HighMemoryUsage"
 
+  # ── SLA alerts ────────────────────────────────────────────────────────────
   - name: aura-vault-sla
     rules:
       - alert: SLABreachAvailability
@@ -44,19 +54,24 @@ groups:
         for: 5m
         labels:
           severity: critical
+          team: platform
         annotations:
           summary: "SLA breach: availability below 99.9%"
           description: "API availability has dropped below 99.9% over the last hour."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/SLABreachAvailability"
 
       - alert: SLABreachLatency
         expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job="aura-vault-api"}[1h])) > 5
         for: 5m
         labels:
           severity: warning
+          team: backend
         annotations:
           summary: "SLA breach: p99 latency above 5s"
           description: "99th percentile latency exceeds 5 seconds over the last hour."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/SLABreachLatency"
 
+  # ── Blockchain / vault alerts ─────────────────────────────────────────────
   - name: aura-vault-blockchain
     rules:
       - alert: TransactionFailureRate
@@ -64,15 +79,116 @@ groups:
         for: 5m
         labels:
           severity: critical
+          team: platform
         annotations:
           summary: "High blockchain transaction failure rate"
           description: "More than 10% of transactions are failing."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/TransactionFailureRate"
 
       - alert: VaultBalanceLow
         expr: vault_balance_xlm < 100
         for: 5m
         labels:
           severity: warning
+          team: platform
         annotations:
           summary: "Vault balance is low"
           description: "Vault XLM balance is below 100 (current: {{ $value }})."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/VaultBalanceLow"
+
+  # ── Infrastructure alerts ─────────────────────────────────────────────────
+  - name: aura-vault-infrastructure
+    rules:
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "The PostgreSQL instance {{ $labels.instance }} has been unreachable for over 1 minute."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/PostgresDown"
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Redis is down"
+          description: "The Redis instance {{ $labels.instance }} has been unreachable for over 1 minute."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/RedisDown"
+
+      - alert: ContractIndexerLag
+        expr: contract_indexer_block_lag > 100
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Contract indexer is lagging behind chain head"
+          description: "Contract indexer is {{ $value }} blocks behind the chain head for 5 minutes."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/ContractIndexerLag"
+
+      - alert: ContractIndexerDown
+        expr: up{job="contract-indexer"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Contract indexer is down"
+          description: "The contract indexer has been unreachable for over 2 minutes."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/ContractIndexerDown"
+
+      - alert: DiskUsageHigh
+        expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Disk usage above 85% on {{ $labels.instance }}"
+          description: "Filesystem {{ $labels.mountpoint }} is {{ $value | humanizePercentage }} full."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/DiskUsageHigh"
+
+  # ── Security alerts ───────────────────────────────────────────────────────
+  - name: aura-vault-security
+    rules:
+      - alert: AbnormalTransactionVolume
+        # Fire if tx rate increases more than 10x over the 1-hour baseline
+        expr: |
+          rate(blockchain_transactions_total[5m])
+          > 10 * avg_over_time(rate(blockchain_transactions_total[5m])[1h:5m])
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Abnormal transaction volume detected"
+          description: "Current transaction rate is more than 10x the 1-hour baseline. Possible attack or spike."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/AbnormalTransactionVolume"
+
+      - alert: UnauthorizedAccessAttempts
+        expr: rate(http_requests_total{status="401"}[5m]) > 10
+        for: 3m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Elevated 401 rate on {{ $labels.job }}"
+          description: "More than 10 unauthorized requests per second for 3 minutes. Possible brute-force or credential stuffing."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/UnauthorizedAccessAttempts"
+
+      - alert: SuspiciousVaultActivity
+        expr: rate(aura_vault_suspicious_events_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Suspicious vault event detected"
+          description: "The flash-loan guard emitted a suspicious event. Check BalanceMismatch details immediately."
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/SuspiciousVaultActivity"
