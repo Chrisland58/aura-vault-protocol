@@ -2,6 +2,16 @@
 name = "aura-vault"
 version = "0.1.0"
 edition = "2021"
+description = "Share-based yield vault smart contract for the Stellar Soroban platform"
+license = "MIT"
+repository = "https://github.com/soterika/aura-vault-protocol"
+documentation = "https://soterika.github.io/aura-vault-protocol"
+
+[package.metadata.docs.rs]
+# Build docs for the host target (docs.rs does not support wasm32)
+targets = []
+# Enable all features so conditional items are documented
+all-features = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
