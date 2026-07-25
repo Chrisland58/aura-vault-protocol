@@ -80,3 +80,16 @@ output "db_master_secret_arn" {
   value       = aws_secretsmanager_secret.db_master.arn
   sensitive   = true
 }
+
+# Issue #517: Frontend deploy role ARN (for GitHub Actions OIDC)
+output "frontend_deploy_role_arn" {
+  description = "IAM role ARN for GitHub Actions frontend deploy (S3 sync + CloudFront invalidation)"
+  value       = aws_iam_role.frontend_deploy.arn
+}
+
+# Issue #516: Read replica endpoint
+output "rds_replica_endpoint" {
+  description = "RDS read replica endpoint (for analytics/read-only queries)"
+  value       = var.enable_read_replica ? aws_db_instance.replica[0].endpoint : null
+  sensitive   = true
+}
