@@ -94,101 +94,182 @@ groups:
         annotations:
           summary: "Vault balance is low"
           description: "Vault XLM balance is below 100 (current: {{ $value }})."
-          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/VaultBalanceLow"
 
-  # ── Infrastructure alerts ─────────────────────────────────────────────────
-  - name: aura-vault-infrastructure
+  - name: aura-vault-operations
     rules:
-      - alert: PostgresDown
-        expr: pg_up == 0
-        for: 1m
+      - alert: VaultPaused
+        expr: vault_is_paused == 1
+        for: 5m
         labels:
           severity: critical
-          team: platform
         annotations:
-          summary: "PostgreSQL is down"
-          description: "The PostgreSQL instance {{ $labels.instance }} has been unreachable for over 1 minute."
-          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/PostgresDown"
+          summary: "Vault is paused"
+          description: "The Aura Vault has been paused for more than 5 minutes. Deposits, withdrawals, and harvests are blocked."
 
-      - alert: RedisDown
-        expr: redis_up == 0
-        for: 1m
+      - alert: VaultBalanceMismatch
+        expr: increase(vault_balance_mismatch_total[5m]) > 0
+        for: 0m
         labels:
           severity: critical
-          team: platform
         annotations:
-          summary: "Redis is down"
-          description: "The Redis instance {{ $labels.instance }} has been unreachable for over 1 minute."
-          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/RedisDown"
+          summary: "Vault balance mismatch detected (possible flash-loan attack)"
+          description: "The flash-loan guard triggered {{ $value }} time(s) in the last 5 minutes."
 
-      - alert: ContractIndexerLag
-        expr: contract_indexer_block_lag > 100
+      - alert: VaultDepositsStopped
+        expr: rate(vault_deposits_total[15m]) == 0 and vault_total_shares > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No vault deposits in the last 15 minutes"
+          description: "The vault has shares outstanding but no deposits have been recorded recently."
+
+      - alert: VaultSharePriceDrop
+        expr: (vault_total_assets / vault_total_shares) < (vault_total_assets offset 1h / vault_total_shares offset 1h) * 0.95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault share price dropped >5% in 1 hour"
+          description: "Share price has fallen significantly. Current: {{ $value }}."
+
+      - alert: VaultHighFeeAccumulation
+        expr: vault_total_fees_collected > 1000000000
         for: 5m
         labels:
           severity: warning
-          team: platform
         annotations:
-          summary: "Contract indexer is lagging behind chain head"
-          description: "Contract indexer is {{ $value }} blocks behind the chain head for 5 minutes."
-          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/ContractIndexerLag"
+          summary: "Vault has accumulated large unclaimed fees"
+          description: "Unclaimed fees: {{ $value }} stroops. Consider withdrawing to treasury."
 
-      - alert: ContractIndexerDown
-        expr: up{job="contract-indexer"} == 0
+      - alert: VaultTransactionFailureRate
+        expr: rate(vault_transactions_total{status="failed"}[5m]) / rate(vault_transactions_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High vault transaction failure rate"
+          description: "More than 5% of vault transactions are failing (current: {{ $value | humanizePercentage }})."
+
+  - name: aura-strategy-health
+    rules:
+      # ── Core health ──────────────────────────────────────────────────────────
+
+      - alert: StrategyUnhealthy
+        expr: aura_strategy_healthy == 0
         for: 2m
         labels:
           severity: critical
-          team: platform
         annotations:
-          summary: "Contract indexer is down"
-          description: "The contract indexer has been unreachable for over 2 minutes."
-          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/ContractIndexerDown"
+          summary: "AuraStrategy is reporting unhealthy"
+          description: >
+            The strategy's healthCheck() returned healthy=false for more than
+            2 minutes. Check emergency mode, pause state, token count, and
+            harvest staleness. Instance: {{ $labels.instance }}.
 
-      - alert: DiskUsageHigh
-        expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes > 0.85
-        for: 10m
+      - alert: StrategyEmergencyModeActive
+        expr: aura_strategy_emergency_mode == 1
+        for: 0m
         labels:
-          severity: warning
-          team: platform
+          severity: critical
         annotations:
-          summary: "Disk usage above 85% on {{ $labels.instance }}"
-          description: "Filesystem {{ $labels.mountpoint }} is {{ $value | humanizePercentage }} full."
-          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/DiskUsageHigh"
+          summary: "AuraStrategy is in emergency mode"
+          description: >
+            emergencyWithdrawAll() was triggered — all funds have been pulled
+            from lending protocols. Immediate human review required.
+            Instance: {{ $labels.instance }}.
 
-  # ── Security alerts ───────────────────────────────────────────────────────
-  - name: aura-vault-security
-    rules:
-      - alert: AbnormalTransactionVolume
-        # Fire if tx rate increases more than 10x over the 1-hour baseline
-        expr: |
-          rate(blockchain_transactions_total[5m])
-          > 10 * avg_over_time(rate(blockchain_transactions_total[5m])[1h:5m])
+      # ── Harvest staleness ────────────────────────────────────────────────────
+
+      - alert: StrategyHarvestStale
+        expr: aura_strategy_stale_harvest == 1
         for: 5m
         labels:
           severity: warning
-          team: platform
         annotations:
-          summary: "Abnormal transaction volume detected"
-          description: "Current transaction rate is more than 10x the 1-hour baseline. Possible attack or spike."
-          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/AbnormalTransactionVolume"
+          summary: "AuraStrategy harvest is stale (>48 h since last harvest)"
+          description: >
+            No harvest has been executed for more than 48 hours. Yield is not
+            being compounded. Last harvest timestamp:
+            {{ $value | humanizeTimestamp }}. Instance: {{ $labels.instance }}.
 
-      - alert: UnauthorizedAccessAttempts
-        expr: rate(http_requests_total{status="401"}[5m]) > 10
-        for: 3m
+      - alert: StrategyHarvestNeverRun
+        expr: aura_strategy_last_harvest_timestamp == 0
+        for: 10m
         labels:
           severity: warning
-          team: backend
         annotations:
-          summary: "Elevated 401 rate on {{ $labels.job }}"
-          description: "More than 10 unauthorized requests per second for 3 minutes. Possible brute-force or credential stuffing."
-          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/UnauthorizedAccessAttempts"
+          summary: "AuraStrategy has never been harvested"
+          description: >
+            The lastHarvestTimestamp is 0 — harvest() has never been called on
+            this strategy. Ensure the keeper bot is configured and running.
+            Instance: {{ $labels.instance }}.
 
-      - alert: SuspiciousVaultActivity
-        expr: rate(aura_vault_suspicious_events_total[5m]) > 0
+      # ── Token count ──────────────────────────────────────────────────────────
+
+      - alert: StrategyInsufficientTokens
+        expr: aura_strategy_active_token_count < 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AuraStrategy has fewer than 5 active tokens"
+          description: >
+            The strategy requires at least 5 active tokens to meet the minimum
+            diversification requirement. Current count:
+            {{ $value }}. Instance: {{ $labels.instance }}.
+
+      - alert: StrategyZeroTokens
+        expr: aura_strategy_active_token_count == 0
         for: 1m
         labels:
           severity: critical
-          team: platform
         annotations:
-          summary: "Suspicious vault event detected"
-          description: "The flash-loan guard emitted a suspicious event. Check BalanceMismatch details immediately."
-          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/SuspiciousVaultActivity"
+          summary: "AuraStrategy has no active tokens"
+          description: >
+            All tokens have been disabled or none have been registered. No
+            funds are being deployed for yield. Instance: {{ $labels.instance }}.
+
+      # ── Deployed capital ─────────────────────────────────────────────────────
+
+      - alert: StrategyDeployedCapitalZero
+        expr: aura_strategy_total_deployed == 0 and aura_strategy_active_token_count > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AuraStrategy has active tokens but zero deployed capital"
+          description: >
+            Tokens are registered but no funds are deployed into lending
+            protocols. This may indicate a deposit failure or emergency
+            withdrawal. Instance: {{ $labels.instance }}.
+
+      - alert: StrategyDeployedCapitalDropped
+        expr: >
+          (aura_strategy_total_deployed
+            - aura_strategy_total_deployed offset 1h)
+          / aura_strategy_total_deployed offset 1h < -0.10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AuraStrategy deployed capital dropped >10% in 1 hour"
+          description: >
+            Deployed capital fell by more than 10% within the past hour.
+            Possible cause: large vault withdrawal, protocol failure, or
+            emergency mode activation. Instance: {{ $labels.instance }}.
+
+      # ── Gas budget (partial emergency withdrawal) ─────────────────────────────
+
+      - alert: StrategyEmergencyWithdrawalPartial
+        expr: increase(aura_strategy_emergency_withdrawal_partial_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AuraStrategy emergency withdrawal was only partial"
+          description: >
+            emergencyWithdrawAll() ran out of gas budget before all tokens
+            were processed. Some funds remain in lending protocols. Re-run
+            emergencyWithdrawAll() with higher gas or process remaining tokens
+            individually. Instance: {{ $labels.instance }}.
