@@ -13,6 +13,7 @@ export { ThemeToggle } from "./ThemeToggle";
 export { LanguageSwitcher } from "./LanguageSwitcher";
 export { Skeleton } from "./Skeleton";
 export { ThemeProvider, useTheme } from "./ThemeProvider";
+export { KeyboardShortcutsHelp } from "./KeyboardShortcutsHelp";
 export {
   NotificationProvider,
   NotificationCenter,
