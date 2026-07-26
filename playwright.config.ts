@@ -73,5 +73,45 @@ export default defineConfig({
         launchOptions: { args: ["--disable-extensions"] },
       },
     },
+    // ── Mobile viewport projects (explicit px widths) ──────────────────────
+    {
+      name: "mobile-375",
+      testMatch: "**/mobile.spec.ts",
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 375, height: 812 },  // iPhone SE
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        hasTouch: true,
+        isMobile: true,
+        deviceScaleFactor: 2,
+      },
+    },
+    {
+      name: "mobile-390",
+      testMatch: "**/mobile.spec.ts",
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 390, height: 844 },  // iPhone 14
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        hasTouch: true,
+        isMobile: true,
+        deviceScaleFactor: 3,
+      },
+    },
+    {
+      name: "mobile-414",
+      testMatch: "**/mobile.spec.ts",
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 414, height: 896 },  // Large Android (e.g. Pixel 3 XL)
+        userAgent:
+          "Mozilla/5.0 (Linux; Android 13; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
+        hasTouch: true,
+        isMobile: true,
+        deviceScaleFactor: 2.625,
+      },
+    },
   ],
 });
