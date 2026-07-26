@@ -48,6 +48,14 @@ mod proptest_strategies;
 mod tvl_cap_test;
 #[cfg(test)]
 mod harvest_cooldown_test;
+#[cfg(test)]
+mod pause_lifecycle_test;
+#[cfg(test)]
+mod event_test;
+#[cfg(test)]
+mod seed_ratio_test;
+#[cfg(test)]
+mod cei_fuzz_test;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
