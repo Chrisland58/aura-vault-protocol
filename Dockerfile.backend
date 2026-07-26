@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+# Builder image pinned to a specific digest for supply-chain safety.
+FROM node:20-alpine@sha256:a8840bcb3f9a4be7c24c77e17e84e7dbad5efda5dfca82c1ea8df1ca29efed9c AS builder
 
 WORKDIR /app
 
@@ -23,7 +24,10 @@ WORKDIR /app/backend
 RUN npm run build
 
 # ── Runtime stage ────────────────────────────────────────────────────────────
-FROM node:20-alpine
+# Base image is pinned to a specific digest to prevent supply-chain attacks
+# via mutable tags (e.g. a compromised "latest" or "20-alpine" tag).
+# To update: docker pull node:20-alpine && docker inspect --format='{{index .RepoDigests 0}}' node:20-alpine
+FROM node:20-alpine@sha256:a8840bcb3f9a4be7c24c77e17e84e7dbad5efda5dfca82c1ea8df1ca29efed9c
 
 WORKDIR /app
 
