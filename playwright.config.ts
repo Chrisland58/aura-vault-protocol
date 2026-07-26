@@ -11,6 +11,9 @@ export default defineConfig({
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000",
     trace: "on-first-retry",
     screenshot: "only-on-failure",
+    // Components use data-cy="…" for test hooks.
+    // Setting testIdAttribute lets page.getByTestId("x") resolve [data-cy="x"].
+    testIdAttribute: "data-cy",
   },
   projects: [
     // ── Desktop browsers ────────────────────────────────────────────────────
