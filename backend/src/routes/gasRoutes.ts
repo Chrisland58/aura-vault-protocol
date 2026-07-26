@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { createGasPriceService } from "../services/gasService.js";
+import { parsePagination, paginateArray, MAX_LIMIT } from "../middleware/paginationMiddleware.js";
 
 const gasService = createGasPriceService();
 
@@ -39,16 +40,26 @@ gasRouter.get("/prices", async (req: Request, res: Response): Promise<void> => {
 
 /**
  * GET /api/v1/gas/history
- * Returns the recent tracked gas samples for the requested chain.
+ * Returns cursor-paginated gas price samples for the requested chain.
+ * Query params: chainId, cursor (opaque), limit (default 20, max 100)
  */
 gasRouter.get("/history", async (req: Request, res: Response): Promise<void> => {
   const chainId = parseChainId(req.query.chainId as string | undefined);
-  const limitRaw = Number.parseInt(String(req.query.limit ?? "10"), 10);
-  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(50, limitRaw) : 10;
+  const { limit, cursor } = parsePagination(req);
 
   try {
-    const history = await gasService.history(chainId, limit);
-    res.json({ chainId, history });
+    // Fetch up to MAX_LIMIT records from the service; paginate in-memory
+    const allHistory = await gasService.history(chainId, MAX_LIMIT);
+    const { data, nextCursor } = paginateArray(
+      allHistory,
+      (item: Record<string, unknown>, index: number) => ({
+        id: String(index),
+        timestamp: typeof item.timestamp === "string" ? item.timestamp : String(index),
+      }),
+      limit,
+      cursor,
+    );
+    res.json({ chainId, data, nextCursor });
   } catch (err) {
     console.error("[gas-history]", err);
     res.status(500).json({ error: "Unable to load gas history" });
