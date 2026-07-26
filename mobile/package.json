@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "expo": "~52.0.0",
-    "expo-local-authentication": "~15.0.0",
+    "expo-local-authentication": "~57.0.2",
     "expo-notifications": "~0.29.0",
     "expo-linking": "~7.0.0",
     "expo-secure-store": "~57.0.1",
