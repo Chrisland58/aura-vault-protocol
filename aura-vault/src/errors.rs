@@ -18,4 +18,10 @@ pub enum VaultError {
     StorageLayoutMismatch  = 10,
     VaultPaused            = 11,
     BalanceMismatch        = 12,
+    /// Governance: proposal timelock has not expired yet
+    TimelockNotExpired     = 13,
+    /// Governance: proposal has not been approved by enough signers
+    NotApproved            = 14,
+    /// Governance: signer has already cast a vote on this proposal
+    AlreadyVoted           = 15,
 }

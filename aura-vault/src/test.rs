@@ -581,7 +581,7 @@ fn test_timelock_prevents_early_execution() {
     vault.vote(&signers[2], &proposal_id, &true);
 
     let result = vault.try_execute(&signers[0], &proposal_id);
-    assert_eq!(result, Err(Ok(VaultError::InvalidAddress)));
+    assert_eq!(result, Err(Ok(VaultError::TimelockNotExpired)));
 }
 
 #[test]
@@ -603,5 +603,5 @@ fn test_cannot_vote_twice() {
 
     vault.vote(&signers[0], &proposal_id, &true);
     let result = vault.try_vote(&signers[0], &proposal_id, &false);
-    assert_eq!(result, Err(Ok(VaultError::InvalidAddress)));
+    assert_eq!(result, Err(Ok(VaultError::AlreadyVoted)));
 }
