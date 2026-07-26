@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "prepare": "husky",
+    "lint-staged": "lint-staged",
     "cy:open": "cypress open",
     "cy:run": "cypress run",
     "cy:run:chrome": "cypress run --browser chrome",
@@ -14,7 +16,18 @@
     "pw:test:ui": "playwright test --ui",
     "pw:report": "playwright show-report"
   },
+  "lint-staged": {
+    "*.{js,ts,tsx,mjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.rs": [
+      "rustfmt"
+    ]
+  },
   "devDependencies": {
+    "@commitlint/cli": "^19.6.1",
+    "@commitlint/config-conventional": "^19.6.1",
     "@playwright/test": "^1.44.0",
     "cypress": "^13.13.0",
     "wait-on": "^7.2.0"
