@@ -10,11 +10,21 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# ─── permissions ──────────────────────────────────────────────────────────────
+# pull-requests: write  — lets the PR comment script upsert a comment
+# contents: read        — needed to checkout the repo
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
-  rust-tests:
-    name: Rust Smart Contract Tests
+  # ────────────────────────────────────────────────────────────────────────────
+  # 1. Smart Contract — cargo test + Tarpaulin coverage (≥ 90 % line)
+  # ────────────────────────────────────────────────────────────────────────────
+  smart-contract-coverage:
+    name: Smart Contract Coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: aura-vault
@@ -37,11 +47,33 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('aura-vault/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Build Wasm (required by upgrade tests)
+      # Build the Wasm binary first (required by upgrade integration tests)
+      - name: Build Wasm
         run: cargo build --target wasm32-unknown-unknown --release
 
-      - name: Run all tests
+      # Run the full test suite and capture output for the summary report
+      - name: Run tests
         run: cargo test -- --test-threads=4 2>&1 | tee ../test-results-rust.txt
+
+      # Install cargo-tarpaulin and measure coverage.
+      # Tarpaulin reads threshold config from tarpaulin.toml and exits non-zero
+      # when coverage < fail-under, so this step itself fails the build.
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --version "0.31.2" --locked
+
+      - name: Measure coverage (threshold ≥ 90 % line)
+        run: |
+          cargo tarpaulin --config tarpaulin.toml 2>&1 | tee ../coverage-tarpaulin.log
+        # tarpaulin reads fail-under from tarpaulin.toml and exits 1 when
+        # coverage is below threshold — this step fails the build automatically.
+
+      - name: Upload smart-contract coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-smart-contract
+          path: coverage/smart-contract/
+          retention-days: 7
 
       - name: Upload Rust test results
         if: always()
@@ -50,6 +82,97 @@ jobs:
           name: rust-test-results
           path: test-results-rust.txt
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # 2. Backend — vitest + coverage (≥ 80 % branch via vitest.config.ts)
+  # ────────────────────────────────────────────────────────────────────────────
+  backend-coverage:
+    name: Backend Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # vitest exits non-zero when any threshold in vitest.config.ts is
+      # breached — this step itself fails the build.
+      - name: Run tests with coverage (threshold ≥ 80 % branch)
+        run: npm run test:coverage 2>&1 | tee ../test-results-backend.txt
+
+      - name: Upload backend coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-backend
+          path: coverage/backend/
+          retention-days: 7
+
+      - name: Upload backend test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: test-results-backend.txt
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 3. Frontend — vitest + coverage (≥ 75 % line via vitest.config.ts)
+  # ────────────────────────────────────────────────────────────────────────────
+  frontend-coverage:
+    name: Frontend Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # vitest exits non-zero when any threshold in vitest.config.ts is
+      # breached — this step itself fails the build.
+      - name: Run tests with coverage (threshold ≥ 75 % line)
+        run: npm run test:coverage 2>&1 | tee ../test-results-frontend.txt
+
+      - name: Upload frontend coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-frontend
+          path: coverage/frontend/
+          retention-days: 7
+
+      - name: Upload frontend test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-test-results
+          path: test-results-frontend.txt
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 4. UI unit tests (existing job, retained unchanged)
+  # ────────────────────────────────────────────────────────────────────────────
   ui-tests:
     name: UI Unit Tests
     runs-on: ubuntu-latest
@@ -61,7 +184,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -79,24 +202,140 @@ jobs:
           name: ui-test-results
           path: test-results-ui.txt
 
-  report:
-    name: Test Summary
+  # ────────────────────────────────────────────────────────────────────────────
+  # 5. PR Coverage Comment — posts delta table; runs only on pull_request events
+  # ────────────────────────────────────────────────────────────────────────────
+  coverage-comment:
+    name: PR Coverage Comment
     runs-on: ubuntu-latest
-    needs: [rust-tests, ui-tests]
+    # Run after all three coverage jobs finish (even if one failed, so we can
+    # still show partial results and call out what broke).
+    # Only post a comment on actual pull requests, not plain pushes.
+    needs: [smart-contract-coverage, backend-coverage, frontend-coverage]
+    if: always() && github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Download current-branch coverage artifacts
+      - name: Download smart-contract coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-smart-contract
+          path: coverage/smart-contract
+        continue-on-error: true   # artifact may be missing if the job crashed
+
+      - name: Download backend coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-backend
+          path: coverage/backend
+        continue-on-error: true
+
+      - name: Download frontend coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-frontend
+          path: coverage/frontend
+        continue-on-error: true
+
+      # Download base-branch coverage from the last successful run on the
+      # target branch so the script can compute the delta.
+      - name: Download base smart-contract coverage
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: ci.yml
+          branch: ${{ github.base_ref }}
+          name: coverage-smart-contract
+          path: coverage/base/smart-contract
+          if_no_artifact_found: warn
+        continue-on-error: true
+
+      - name: Download base backend coverage
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: ci.yml
+          branch: ${{ github.base_ref }}
+          name: coverage-backend
+          path: coverage/base/backend
+          if_no_artifact_found: warn
+        continue-on-error: true
+
+      - name: Download base frontend coverage
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: ci.yml
+          branch: ${{ github.base_ref }}
+          name: coverage-frontend
+          path: coverage/base/frontend
+          if_no_artifact_found: warn
+        continue-on-error: true
+
+      # Run the comment script — posts/updates a PR comment with a coverage table
+      - name: Post coverage comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node .github/scripts/post-coverage-comment.mjs
+
+      # Always upload the rendered comment as an artifact for debugging
+      - name: Upload coverage comment artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-comment
+          path: coverage/coverage-comment.md
+          retention-days: 7
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 6. Final gate — fails the overall pipeline if any coverage job failed
+  # ────────────────────────────────────────────────────────────────────────────
+  report:
+    name: Test & Coverage Summary
+    runs-on: ubuntu-latest
+    needs:
+      - smart-contract-coverage
+      - backend-coverage
+      - frontend-coverage
+      - ui-tests
     if: always()
 
     steps:
-      - name: Download artifacts
+      - name: Download all test result artifacts
         uses: actions/download-artifact@v4
+        continue-on-error: true
 
       - name: Print Rust results
-        run: cat rust-test-results/test-results-rust.txt || echo "No Rust results"
+        run: cat rust-test-results/test-results-rust.txt 2>/dev/null || echo "No Rust results"
+
+      - name: Print backend results
+        run: cat backend-test-results/test-results-backend.txt 2>/dev/null || echo "No backend results"
+
+      - name: Print frontend results
+        run: cat frontend-test-results/test-results-frontend.txt 2>/dev/null || echo "No frontend results"
 
       - name: Print UI results
-        run: cat ui-test-results/test-results-ui.txt || echo "No UI results"
+        run: cat ui-test-results/test-results-ui.txt 2>/dev/null || echo "No UI results"
 
-      - name: Fail if any job failed
-        if: ${{ needs.rust-tests.result == 'failure' || needs.ui-tests.result == 'failure' }}
+      - name: Fail if any coverage or test job failed
+        if: >
+          needs.smart-contract-coverage.result == 'failure' ||
+          needs.backend-coverage.result == 'failure' ||
+          needs.frontend-coverage.result == 'failure' ||
+          needs.ui-tests.result == 'failure'
         run: |
-          echo "One or more test jobs failed. See artifacts for details."
+          echo "One or more test/coverage jobs failed:"
+          echo "  smart-contract-coverage: ${{ needs.smart-contract-coverage.result }}"
+          echo "  backend-coverage:        ${{ needs.backend-coverage.result }}"
+          echo "  frontend-coverage:       ${{ needs.frontend-coverage.result }}"
+          echo "  ui-tests:                ${{ needs.ui-tests.result }}"
           exit 1
