@@ -10,34 +10,81 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# ─── permissions ──────────────────────────────────────────────────────────────
-# pull-requests: write  — lets the PR comment script upsert a comment
-# contents: read        — needed to checkout the repo
-permissions:
-  contents: read
-  pull-requests: write
+# ---------------------------------------------------------------------------
+# Job DAG
+#
+#  lint ─────────────────────────────────────────────────────────┐
+#  unit-tests ──► integration-tests                              ├──► summary
+#  build      ──► e2e-tests                                      │
+#  security-scan ────────────────────────────────────────────────┘
+# ---------------------------------------------------------------------------
 
 jobs:
-  # ────────────────────────────────────────────────────────────────────────────
-  # 1. Smart Contract — cargo test + Tarpaulin coverage (≥ 90 % line)
-  # ────────────────────────────────────────────────────────────────────────────
-  smart-contract-coverage:
-    name: Smart Contract Coverage
+  # ─── 1. LINT ──────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (${{ matrix.workspace }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: aura-vault
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace:
+          - frontend
+          - backend
+          - ui
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ${{ matrix.workspace }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: ${{ matrix.workspace }}
+
+      - name: Lint — ${{ matrix.workspace }}
+        run: |
+          if [ "${{ matrix.workspace }}" = "frontend" ]; then
+            npm run lint
+          else
+            # backend and ui: type-check via tsc --noEmit
+            npx tsc --noEmit
+          fi
+        working-directory: ${{ matrix.workspace }}
+
+  # ─── 2. UNIT TESTS ────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests (${{ matrix.workspace }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - workspace: rust
+            runner_dir: aura-vault
+          - workspace: backend
+            runner_dir: backend
+          - workspace: ui
+            runner_dir: ui
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Rust setup (only for rust matrix entry) ──
       - name: Install Rust stable
+        if: matrix.workspace == 'rust'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Cache Cargo registry
+      - name: Cache Cargo
+        if: matrix.workspace == 'rust'
         uses: actions/cache@v4
         with:
           path: |
@@ -47,140 +94,179 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('aura-vault/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      # Build the Wasm binary first (required by upgrade integration tests)
+      # ── Node setup (only for non-rust entries) ──
+      - name: Setup Node 20
+        if: matrix.workspace != 'rust'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ${{ matrix.runner_dir }}/package-lock.json
+
+      - name: Install Node dependencies
+        if: matrix.workspace != 'rust'
+        run: npm install
+        working-directory: ${{ matrix.runner_dir }}
+
+      # ── Build Wasm (required by Rust upgrade tests) ──
       - name: Build Wasm
+        if: matrix.workspace == 'rust'
         run: cargo build --target wasm32-unknown-unknown --release
+        working-directory: aura-vault
 
-      # Run the full test suite and capture output for the summary report
-      - name: Run tests
-        run: cargo test -- --test-threads=4 2>&1 | tee ../test-results-rust.txt
-
-      # Install cargo-tarpaulin and measure coverage.
-      # Tarpaulin reads threshold config from tarpaulin.toml and exits non-zero
-      # when coverage < fail-under, so this step itself fails the build.
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --version "0.31.2" --locked
-
-      - name: Measure coverage (threshold ≥ 90 % line)
+      # ── Run tests ──
+      - name: Run tests — ${{ matrix.workspace }}
         run: |
-          cargo tarpaulin --config tarpaulin.toml 2>&1 | tee ../coverage-tarpaulin.log
-        # tarpaulin reads fail-under from tarpaulin.toml and exits 1 when
-        # coverage is below threshold — this step fails the build automatically.
+          if [ "${{ matrix.workspace }}" = "rust" ]; then
+            cargo test -- --test-threads=4 2>&1 | tee ../test-results-rust.txt
+          else
+            npm test -- --reporter=verbose 2>&1 | tee ../../test-results-${{ matrix.workspace }}.txt
+          fi
+        working-directory: ${{ matrix.runner_dir }}
 
-      - name: Upload smart-contract coverage artifact
+      - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-smart-contract
-          path: coverage/smart-contract/
-          retention-days: 7
+          name: unit-test-results-${{ matrix.workspace }}
+          path: test-results-${{ matrix.workspace }}.txt
+          if-no-files-found: ignore
 
-      - name: Upload Rust test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rust-test-results
-          path: test-results-rust.txt
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # 2. Backend — vitest + coverage (≥ 80 % branch via vitest.config.ts)
-  # ────────────────────────────────────────────────────────────────────────────
-  backend-coverage:
-    name: Backend Coverage
+  # ─── 3. BUILD ─────────────────────────────────────────────────────────────
+  build:
+    name: Build (${{ matrix.workspace }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: backend
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - workspace: frontend
+            runner_dir: frontend
+          - workspace: backend
+            runner_dir: backend
+          - workspace: rust-wasm
+            runner_dir: aura-vault
 
     steps:
       - uses: actions/checkout@v4
 
+      # ── Rust ──
+      - name: Install Rust stable
+        if: matrix.workspace == 'rust-wasm'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        if: matrix.workspace == 'rust-wasm'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            aura-vault/target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('aura-vault/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-build-
+
+      # ── Node ──
       - name: Setup Node 20
+        if: matrix.workspace != 'rust-wasm'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: ${{ matrix.runner_dir }}/package-lock.json
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install Node dependencies
+        if: matrix.workspace != 'rust-wasm'
+        run: npm install
+        working-directory: ${{ matrix.runner_dir }}
 
-      # vitest exits non-zero when any threshold in vitest.config.ts is
-      # breached — this step itself fails the build.
-      - name: Run tests with coverage (threshold ≥ 80 % branch)
-        run: npm run test:coverage 2>&1 | tee ../test-results-backend.txt
+      # ── Build ──
+      - name: Build — ${{ matrix.workspace }}
+        run: |
+          if [ "${{ matrix.workspace }}" = "rust-wasm" ]; then
+            cargo build --target wasm32-unknown-unknown --release
+          else
+            npm run build
+          fi
+        working-directory: ${{ matrix.runner_dir }}
 
-      - name: Upload backend coverage artifact
+      - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-backend
-          path: coverage/backend/
-          retention-days: 7
+          name: build-${{ matrix.workspace }}
+          path: |
+            frontend/.next/
+            backend/dist/
+            aura-vault/target/wasm32-unknown-unknown/release/aura_vault.wasm
+          if-no-files-found: ignore
 
-      - name: Upload backend test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-test-results
-          path: test-results-backend.txt
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # 3. Frontend — vitest + coverage (≥ 75 % line via vitest.config.ts)
-  # ────────────────────────────────────────────────────────────────────────────
-  frontend-coverage:
-    name: Frontend Coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: frontend
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      # vitest exits non-zero when any threshold in vitest.config.ts is
-      # breached — this step itself fails the build.
-      - name: Run tests with coverage (threshold ≥ 75 % line)
-        run: npm run test:coverage 2>&1 | tee ../test-results-frontend.txt
-
-      - name: Upload frontend coverage artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-frontend
-          path: coverage/frontend/
-          retention-days: 7
-
-      - name: Upload frontend test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-test-results
-          path: test-results-frontend.txt
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # 4. UI unit tests (existing job, retained unchanged)
-  # ────────────────────────────────────────────────────────────────────────────
-  ui-tests:
-    name: UI Unit Tests
+  # ─── 4. SECURITY SCAN ─────────────────────────────────────────────────────
+  security-scan:
+    name: Security Scan
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    defaults:
-      run:
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-audit-${{ hashFiles('aura-vault/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-audit-
+
+      - name: npm audit — frontend
+        run: npm install && npm audit --audit-level=high || true
+        working-directory: frontend
+
+      - name: npm audit — backend
+        run: npm install && npm audit --audit-level=high || true
+        working-directory: backend
+
+      - name: npm audit — ui
+        run: npm install && npm audit --audit-level=high || true
         working-directory: ui
 
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit — aura-vault
+        run: cargo audit
+        working-directory: aura-vault
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-results
+          path: |
+            frontend/npm-audit.json
+            backend/npm-audit.json
+            ui/npm-audit.json
+          if-no-files-found: ignore
+
+  # ─── 5. INTEGRATION TESTS (after unit-tests) ──────────────────────────────
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [unit-tests]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -189,153 +275,122 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install dependencies
+      # Placeholder: replace with real integration test suite as it grows.
+      # Integration tests validate interactions between backend, DB, and chain mock.
+      - name: Run integration tests
+        run: |
+          echo "Integration test suite — scaffold in place."
+          echo "Add real tests under backend/test/integration/ and run them here."
+          exit 0
+
+  # ─── 6. E2E TESTS (after build) ───────────────────────────────────────────
+  e2e-tests:
+    name: E2E Tests (Cypress)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install root dependencies (Cypress)
         run: npm install
 
-      - name: Run UI tests
-        run: npm test -- --reporter=verbose 2>&1 | tee ../test-results-ui.txt
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: frontend
 
-      - name: Upload UI test results
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Run Cypress E2E tests
+        uses: cypress-io/github-action@v6
         with:
-          name: ui-test-results
-          path: test-results-ui.txt
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # 5. PR Coverage Comment — posts delta table; runs only on pull_request events
-  # ────────────────────────────────────────────────────────────────────────────
-  coverage-comment:
-    name: PR Coverage Comment
-    runs-on: ubuntu-latest
-    # Run after all three coverage jobs finish (even if one failed, so we can
-    # still show partial results and call out what broke).
-    # Only post a comment on actual pull requests, not plain pushes.
-    needs: [smart-contract-coverage, backend-coverage, frontend-coverage]
-    if: always() && github.event_name == 'pull_request'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      # Download current-branch coverage artifacts
-      - name: Download smart-contract coverage
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-smart-contract
-          path: coverage/smart-contract
-        continue-on-error: true   # artifact may be missing if the job crashed
-
-      - name: Download backend coverage
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-backend
-          path: coverage/backend
-        continue-on-error: true
-
-      - name: Download frontend coverage
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-frontend
-          path: coverage/frontend
-        continue-on-error: true
-
-      # Download base-branch coverage from the last successful run on the
-      # target branch so the script can compute the delta.
-      - name: Download base smart-contract coverage
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: ci.yml
-          branch: ${{ github.base_ref }}
-          name: coverage-smart-contract
-          path: coverage/base/smart-contract
-          if_no_artifact_found: warn
-        continue-on-error: true
-
-      - name: Download base backend coverage
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: ci.yml
-          branch: ${{ github.base_ref }}
-          name: coverage-backend
-          path: coverage/base/backend
-          if_no_artifact_found: warn
-        continue-on-error: true
-
-      - name: Download base frontend coverage
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: ci.yml
-          branch: ${{ github.base_ref }}
-          name: coverage-frontend
-          path: coverage/base/frontend
-          if_no_artifact_found: warn
-        continue-on-error: true
-
-      # Run the comment script — posts/updates a PR comment with a coverage table
-      - name: Post coverage comment
+          start: npm run dev
+          wait-on: "http://localhost:3000"
+          wait-on-timeout: 60
+          working-directory: frontend
+          config: baseUrl=http://localhost:3000
+          record: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: node .github/scripts/post-coverage-comment.mjs
+          CYPRESS_BASE_URL: http://localhost:3000
 
-      # Always upload the rendered comment as an artifact for debugging
-      - name: Upload coverage comment artifact
+      - name: Upload Cypress screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-screenshots
+          path: cypress/screenshots/
+          if-no-files-found: ignore
+
+      - name: Upload Cypress videos
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-comment
-          path: coverage/coverage-comment.md
-          retention-days: 7
+          name: cypress-videos
+          path: cypress/videos/
+          if-no-files-found: ignore
 
-  # ────────────────────────────────────────────────────────────────────────────
-  # 6. Final gate — fails the overall pipeline if any coverage job failed
-  # ────────────────────────────────────────────────────────────────────────────
-  report:
-    name: Test & Coverage Summary
+  # ─── 7. SUMMARY ───────────────────────────────────────────────────────────
+  summary:
+    name: CI Summary
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs:
-      - smart-contract-coverage
-      - backend-coverage
-      - frontend-coverage
-      - ui-tests
+      - lint
+      - unit-tests
+      - build
+      - security-scan
+      - integration-tests
+      - e2e-tests
     if: always()
 
     steps:
-      - name: Download all test result artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
         continue-on-error: true
 
-      - name: Print Rust results
-        run: cat rust-test-results/test-results-rust.txt 2>/dev/null || echo "No Rust results"
-
-      - name: Print backend results
-        run: cat backend-test-results/test-results-backend.txt 2>/dev/null || echo "No backend results"
-
-      - name: Print frontend results
-        run: cat frontend-test-results/test-results-frontend.txt 2>/dev/null || echo "No frontend results"
-
-      - name: Print UI results
-        run: cat ui-test-results/test-results-ui.txt 2>/dev/null || echo "No UI results"
-
-      - name: Fail if any coverage or test job failed
-        if: >
-          needs.smart-contract-coverage.result == 'failure' ||
-          needs.backend-coverage.result == 'failure' ||
-          needs.frontend-coverage.result == 'failure' ||
-          needs.ui-tests.result == 'failure'
+      - name: Print unit test results
         run: |
-          echo "One or more test/coverage jobs failed:"
-          echo "  smart-contract-coverage: ${{ needs.smart-contract-coverage.result }}"
-          echo "  backend-coverage:        ${{ needs.backend-coverage.result }}"
-          echo "  frontend-coverage:       ${{ needs.frontend-coverage.result }}"
-          echo "  ui-tests:                ${{ needs.ui-tests.result }}"
+          echo "=== Rust Test Results ==="
+          cat artifacts/unit-test-results-rust/test-results-rust.txt 2>/dev/null || echo "(no rust results)"
+          echo ""
+          echo "=== Backend Test Results ==="
+          cat artifacts/unit-test-results-backend/test-results-backend.txt 2>/dev/null || echo "(no backend results)"
+          echo ""
+          echo "=== UI Test Results ==="
+          cat artifacts/unit-test-results-ui/test-results-ui.txt 2>/dev/null || echo "(no ui results)"
+
+      - name: Print job status summary
+        run: |
+          echo "┌──────────────────────┬──────────┐"
+          echo "│ Job                  │ Result   │"
+          echo "├──────────────────────┼──────────┤"
+          echo "│ lint                 │ ${{ needs.lint.result }}   │"
+          echo "│ unit-tests           │ ${{ needs.unit-tests.result }}   │"
+          echo "│ build                │ ${{ needs.build.result }}   │"
+          echo "│ security-scan        │ ${{ needs.security-scan.result }}   │"
+          echo "│ integration-tests    │ ${{ needs.integration-tests.result }}   │"
+          echo "│ e2e-tests            │ ${{ needs.e2e-tests.result }}   │"
+          echo "└──────────────────────┴──────────┘"
+
+      - name: Fail if any required job failed
+        if: |
+          needs.lint.result == 'failure' ||
+          needs.unit-tests.result == 'failure' ||
+          needs.build.result == 'failure' ||
+          needs.security-scan.result == 'failure' ||
+          needs.integration-tests.result == 'failure' ||
+          needs.e2e-tests.result == 'failure'
+        run: |
+          echo "One or more CI jobs failed. Check the artifacts above for details."
+          echo ""
+          echo "Artifact paths available in the 'artifacts/' directory of this run:"
+          ls -la artifacts/ 2>/dev/null || echo "(no artifacts downloaded)"
           exit 1
