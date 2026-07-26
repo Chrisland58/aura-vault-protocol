@@ -115,3 +115,59 @@ jobs:
           name: aura-vault-wasm-pr-${{ github.event.number }}
           path: aura-vault/target/wasm32-unknown-unknown/release/aura_vault.wasm
           retention-days: 7
+
+  mobile-tests:
+    name: Mobile Viewport Tests (375 / 390 / 414 px)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build Next.js frontend
+        working-directory: frontend
+        run: npx next build
+        env:
+          # Prevent fetch errors from breaking the static build
+          NEXT_PUBLIC_API_URL: http://localhost:3001
+
+      - name: Install Playwright browsers (Chromium only)
+        run: npx playwright install chromium --with-deps
+
+      - name: Start frontend server
+        working-directory: frontend
+        run: npx next start &
+        env:
+          PORT: 3000
+
+      - name: Wait for frontend to be ready
+        run: npx wait-on http://localhost:3000 --timeout 60000
+
+      - name: Run mobile Playwright tests
+        run: >
+          npx playwright test playwright/mobile.spec.ts
+          --project=iphone-se
+          --project=iphone-14
+          --project=android-lg
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3000
+          CI: true
+
+      - name: Upload Playwright report on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-mobile-report-pr-${{ github.event.number }}
+          path: playwright-report/
+          retention-days: 7
