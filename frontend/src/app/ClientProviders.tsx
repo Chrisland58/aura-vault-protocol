@@ -1,43 +1,31 @@
 "use client";
 
-import { OnboardingChecklist } from "@/components/OnboardingChecklist";
+import { type ReactNode } from "react";
 import { NotificationProvider } from "@/components/notifications";
-import { type ReactNode, useState, useEffect } from "react";
+import { CriticalMessageProvider, type CriticalMessage } from "@/components/CriticalMessageAck";
 
-const WALLET_STORAGE_KEY = "aura_wallet_state";
-
-function useWalletAddress(): string | null {
-  const [address, setAddress] = useState<string | null>(null);
-
-  useEffect(() => {
-    function read() {
-      try {
-        const raw = localStorage.getItem(WALLET_STORAGE_KEY);
-        if (raw) {
-          const state = JSON.parse(raw);
-          setAddress(state.address ?? null);
-        }
-      } catch {
-        // ignore
-      }
-    }
-    read();
-    // Re-read whenever another tab or the same page updates wallet state
-    window.addEventListener("storage", read);
-    return () => window.removeEventListener("storage", read);
-  }, []);
-
-  return address;
-}
+/**
+ * Example pending critical messages.
+ * In production these would come from an API or feature flags.
+ * They are queued on mount; any already-acknowledged messages are silently skipped.
+ */
+const PENDING_CRITICAL_MESSAGES: CriticalMessage[] = [
+  {
+    id: "vault-paused-2026-07-25",
+    type: "vault_paused",
+    title: "Vault Operations Paused",
+    body: "The Aura Vault has been temporarily paused by the admin. Deposits, withdrawals, and harvests are disabled until further notice.",
+    detail:
+      "This pause was triggered as a precautionary measure. Your funds are safe and remain in the vault. No action is required from you at this time.",
+  },
+];
 
 export default function ClientProviders({ children }: { children: ReactNode }) {
-  const walletAddress = useWalletAddress();
-
   return (
     <NotificationProvider>
-      <OnboardingChecklist walletAddress={walletAddress}>
+      <CriticalMessageProvider initialMessages={PENDING_CRITICAL_MESSAGES}>
         {children}
-      </OnboardingChecklist>
+      </CriticalMessageProvider>
     </NotificationProvider>
   );
 }
