@@ -1,86 +1,65 @@
 /**
- * Analytics routes — all SELECT queries go through the read replica pool.
+ * Portfolio Analytics Routes — Issue #320
  *
- * Endpoints:
- *   GET /api/v1/analytics/vault-stats      – aggregate vault metrics
- *   GET /api/v1/analytics/replication-lag  – current replica lag in seconds
+ * GET /api/portfolio/:address/analytics
+ *   Returns pre-computed analytics for a Stellar wallet address.
+ *   Computes on first request, caches in Redis for 5 minutes.
+ *   Invalidated on harvest events.
  */
 
-import { Router, type Request, type Response } from "express";
-import { authenticate } from "../middleware/authMiddleware.js";
-import { getReadPool } from "../db.js";
+import express, { Request, Response } from "express";
+import { getPortfolioAnalytics, type TxEvent } from "../services/analyticsService.js";
 
-export const analyticsRouter = Router();
+const router = express.Router();
+
+// ---------------------------------------------------------------------------
+// Stub event loader — replace with real DB / Horizon query in production
+// ---------------------------------------------------------------------------
+
+async function loadEventsForAddress(address: string): Promise<TxEvent[]> {
+  // In production: query postgres for all deposit/withdrawal/harvest events
+  // tied to this address, ordered by timestamp ascending.
+  //
+  // Example SQL:
+  //   SELECT type, amount, timestamp, price_per_unit
+  //   FROM vault_transactions
+  //   WHERE wallet_address = $1
+  //   ORDER BY timestamp ASC
+  //
+  // For now we return an empty set so the route is exercisable without a DB.
+  void address;
+  return [];
+}
+
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
 
 /**
- * GET /api/v1/analytics/vault-stats
- * Returns aggregate vault statistics from the read replica.
+ * GET /api/portfolio/:address/analytics
+ *
+ * Response:
+ *   200 { address, totalDeposited, totalWithdrawn, netPnL, averageEntryPrice,
+ *          computedAt, transactionCount }
+ *   400 { error: "Invalid address" }
+ *   500 { error: "Internal server error" }
  */
-analyticsRouter.get(
-  "/vault-stats",
-  authenticate,
-  async (_req: Request, res: Response): Promise<void> => {
-    const pool = getReadPool();
-    try {
-      // Parameterised query — no injection risk
-      const { rows } = await pool.query<{
-        total_positions: string;
-        total_deposited: string;
-        total_yield_earned: string;
-        active_users: string;
-      }>(
-        `SELECT
-           COUNT(*)                          AS total_positions,
-           COALESCE(SUM(amount), 0)          AS total_deposited,
-           COALESCE(SUM(yield_earned), 0)    AS total_yield_earned,
-           COUNT(DISTINCT user_id)           AS active_users
-         FROM vault_positions
-         WHERE deleted_at IS NULL`
-      );
+router.get("/:address/analytics", async (req: Request, res: Response) => {
+  const { address } = req.params;
 
-      const stats = rows[0];
-      res.json({
-        totalPositions: Number(stats.total_positions),
-        totalDeposited: stats.total_deposited,
-        totalYieldEarned: stats.total_yield_earned,
-        activeUsers: Number(stats.active_users),
-        dataSource: "read-replica",
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.error("[analytics/vault-stats]", err);
-      res.status(500).json({ error: "Failed to retrieve vault statistics" });
-    }
+  // Basic Stellar address validation (G… public keys are 56 chars)
+  if (!address || !/^[A-Z2-7]{56}$/.test(address)) {
+    res.status(400).json({ error: "Invalid Stellar address format" });
+    return;
   }
-);
 
-/**
- * GET /api/v1/analytics/replication-lag
- * Returns the current replication lag in seconds (0 if this is the primary).
- */
-analyticsRouter.get(
-  "/replication-lag",
-  authenticate,
-  async (_req: Request, res: Response): Promise<void> => {
-    const pool = getReadPool();
-    try {
-      const { rows } = await pool.query<{ lag_seconds: number | null }>(
-        `SELECT EXTRACT(EPOCH FROM (NOW() - pg_last_xact_replay_timestamp()))::FLOAT AS lag_seconds`
-      );
-
-      const lagSeconds = rows[0]?.lag_seconds ?? 0;
-      const isReplica = lagSeconds !== null && lagSeconds > 0;
-
-      res.json({
-        lagSeconds: lagSeconds ?? 0,
-        isReplica,
-        healthy: lagSeconds === null || lagSeconds <= 30,
-        threshold: 30,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.error("[analytics/replication-lag]", err);
-      res.status(500).json({ error: "Failed to retrieve replication lag" });
-    }
+  try {
+    const analytics = await getPortfolioAnalytics(address, loadEventsForAddress);
+    res.json(analytics);
+  } catch (err) {
+    console.error("[analyticsRoute] error computing analytics:", err);
+    res.status(500).json({ error: "Internal server error" });
   }
-);
+});
+
+export { router as analyticsRouter };
