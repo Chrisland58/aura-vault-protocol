@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import WalletConnect from "./WalletConnect";
 import VaultActions from "./VaultActions";
 import { useOnboarding } from "@/components/OnboardingChecklist";
+import { EmptyState } from "./EmptyState";
 
 interface VaultStats {
   tvl: string;
@@ -273,7 +274,7 @@ export default function VaultDashboard() {
           aria-label="Recent transactions"
         >
           {txs.length === 0 ? (
-            <p className="py-6 text-center text-sm text-zinc-400">No transactions yet.</p>
+            <EmptyState variant="no-transactions" className="py-4" />
           ) : (
             txs.map((tx) => (
               <div key={tx.id} role="listitem">
