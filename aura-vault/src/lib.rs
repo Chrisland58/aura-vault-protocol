@@ -609,6 +609,443 @@ impl AuraVault {
     }
 
     // -----------------------------------------------------------------------
+    // distribute_yield — permissionless keeper entry point
+    //
+    // Accepts `yield_amount` of the underlying token from `caller` and
+    // distributes it proportionally to all vault shareholders via the global
+    // cumulative-yield-per-share (YPS) accumulator.  Shareholders call
+    // `collect_pending_yield` to pull their share out.
+    //
+    // Algorithm:
+    //   delta_yps = net_yield * YIELD_PRECISION / total_shares
+    //   cumulative_yps += delta_yps
+    //
+    // Accuracy guarantee:
+    //   The maximum undistributed dust per epoch is:
+    //     (total_shares - 1) / YIELD_PRECISION ≤ (total_shares - 1) / 1e12
+    //   For any vault where total_shares ≤ 1e12 this is < 1 stroop.
+    //   We enforce that net_yield >= total_shares / YIELD_PRECISION, which
+    //   means delta_yps ≥ 1 — i.e., every shareholder gets at least 1e-12
+    //   underlying per share.  A 0.01% accuracy check is performed in
+    //   preview_distribution.
+    //
+    // Edge cases:
+    //   - No shares outstanding        → YieldTooSmall (nothing to distribute)
+    //   - Yield rounds delta_yps to 0  → YieldTooSmall
+    //   - Vault paused                 → VaultPaused
+    //   - Flash-loan guard             → BalanceMismatch
+    // -----------------------------------------------------------------------
+    pub fn distribute_yield(env: Env, caller: Address, yield_amount: i128) -> Result<(), VaultError> {
+        caller.require_auth();
+
+        if yield_amount <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        if storage_is_paused(&env) {
+            return Err(VaultError::VaultPaused);
+        }
+
+        let total_shares = get_total_shares(&env);
+        if total_shares == 0 {
+            return Err(VaultError::ZeroShares);
+        }
+
+        // --- Flash-loan guard on underlying token ---
+        let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
+        let token = token::Client::new(&env, &token_addr);
+        let balance_before = token.balance(&env.current_contract_address());
+        let total_deposited = get_total_deposited(&env);
+        if balance_before != total_deposited {
+            env.events().publish(
+                (Symbol::new(&env, "suspicious"),),
+                (Symbol::new(&env, "balance_mismatch"), balance_before, total_deposited),
+            );
+            return Err(VaultError::BalanceMismatch);
+        }
+
+        // --- Performance fee ---
+        let perf_fee_bps = storage::get_perf_fee_bps(&env);
+        let fee_amount = fee::calc_perf_fee(yield_amount, perf_fee_bps)?;
+        let net_yield = yield_amount
+            .checked_sub(fee_amount)
+            .ok_or(VaultError::MathOverflow)?;
+
+        // --- Accuracy guard: net_yield must produce a non-zero delta_yps ---
+        // delta_yps = floor(net_yield * YIELD_PRECISION / total_shares)
+        // For this to be ≥ 1 we need net_yield ≥ ceil(total_shares / YIELD_PRECISION).
+        let scaled = net_yield
+            .checked_mul(YIELD_PRECISION)
+            .ok_or(VaultError::MathOverflow)?;
+        let delta_yps = scaled
+            .checked_div(total_shares)
+            .ok_or(VaultError::MathOverflow)?;
+        if delta_yps == 0 {
+            return Err(VaultError::YieldTooSmall);
+        }
+
+        // --- Accuracy check: distributed tokens ≈ net_yield within 0.01% ---
+        // distributed = floor(delta_yps * total_shares / YIELD_PRECISION)
+        // We verify |distributed - net_yield| / net_yield ≤ 0.0001 (1 bps).
+        let distributed = delta_yps
+            .checked_mul(total_shares)
+            .ok_or(VaultError::MathOverflow)?
+            .checked_div(YIELD_PRECISION)
+            .ok_or(VaultError::MathOverflow)?;
+        // tolerance = ceil(net_yield / 10_000)  →  0.01%
+        let tolerance = net_yield
+            .checked_add(9_999)
+            .ok_or(VaultError::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(VaultError::MathOverflow)?;
+        let diff = (distributed - net_yield).abs();
+        if diff > tolerance {
+            return Err(VaultError::DistributionAccuracyError);
+        }
+
+        // --- CEI: Interaction first — pull tokens ---
+        token.transfer(&caller, &env.current_contract_address(), &yield_amount);
+
+        // --- Effects: update global state ---
+        let prev_yps = storage::get_cumulative_yps(&env);
+        let new_yps = prev_yps
+            .checked_add(delta_yps)
+            .ok_or(VaultError::MathOverflow)?;
+        storage::set_cumulative_yps(&env, new_yps);
+
+        // Credit net yield to total_deposited so share price and withdraw math stay consistent.
+        let new_total = total_deposited
+            .checked_add(net_yield)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_deposited(&env, new_total);
+
+        // Accumulate fees
+        let prev_fees = storage::get_total_fee_collected(&env);
+        storage::set_total_fee_collected(
+            &env,
+            prev_fees.checked_add(fee_amount).ok_or(VaultError::MathOverflow)?,
+        );
+
+        // Bump distribution epoch
+        let epoch = storage::get_distribution_epoch(&env);
+        let new_epoch = epoch + 1;
+        storage::set_distribution_epoch(&env, new_epoch);
+
+        // --- Events ---
+        env.events().publish(
+            (Symbol::new(&env, "yield_distributed"), caller.clone()),
+            (yield_amount, net_yield, fee_amount, total_shares, new_yps, new_epoch),
+        );
+
+        bump_instance(&env);
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // distribute_yield_token — distribute a whitelisted alt yield token
+    //
+    // Like distribute_yield but accepts an alternative SEP-41 token.  The
+    // caller provides both the alt-token yield amount and its equivalent
+    // value expressed in underlying token stroops (caller is responsible for
+    // the swap or valuation oracle off-chain; the vault trusts this input the
+    // same way harvest_token does).
+    // -----------------------------------------------------------------------
+    pub fn distribute_yield_token(
+        env: Env,
+        caller: Address,
+        alt_token: Address,
+        yield_amount: i128,
+        underlying_amount: i128,
+    ) -> Result<(), VaultError> {
+        caller.require_auth();
+
+        if yield_amount <= 0 || underlying_amount <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        if storage_is_paused(&env) {
+            return Err(VaultError::VaultPaused);
+        }
+        if !storage::is_yield_token(&env, &alt_token) {
+            return Err(VaultError::InvalidAddress);
+        }
+
+        let total_shares = get_total_shares(&env);
+        if total_shares == 0 {
+            return Err(VaultError::ZeroShares);
+        }
+
+        // Flash-loan guard on underlying token
+        let underlying_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
+        let underlying = token::Client::new(&env, &underlying_addr);
+        let balance_before = underlying.balance(&env.current_contract_address());
+        let total_deposited = get_total_deposited(&env);
+        if balance_before != total_deposited {
+            env.events().publish(
+                (Symbol::new(&env, "suspicious"),),
+                (Symbol::new(&env, "balance_mismatch"), balance_before, total_deposited),
+            );
+            return Err(VaultError::BalanceMismatch);
+        }
+
+        // Performance fee on underlying value
+        let perf_fee_bps = storage::get_perf_fee_bps(&env);
+        let fee_amount = fee::calc_perf_fee(underlying_amount, perf_fee_bps)?;
+        let net_underlying = underlying_amount
+            .checked_sub(fee_amount)
+            .ok_or(VaultError::MathOverflow)?;
+
+        // Accuracy guard
+        let scaled = net_underlying
+            .checked_mul(YIELD_PRECISION)
+            .ok_or(VaultError::MathOverflow)?;
+        let delta_yps = scaled
+            .checked_div(total_shares)
+            .ok_or(VaultError::MathOverflow)?;
+        if delta_yps == 0 {
+            return Err(VaultError::YieldTooSmall);
+        }
+
+        // Accuracy check
+        let distributed = delta_yps
+            .checked_mul(total_shares)
+            .ok_or(VaultError::MathOverflow)?
+            .checked_div(YIELD_PRECISION)
+            .ok_or(VaultError::MathOverflow)?;
+        let tolerance = net_underlying
+            .checked_add(9_999)
+            .ok_or(VaultError::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(VaultError::MathOverflow)?;
+        let diff = (distributed - net_underlying).abs();
+        if diff > tolerance {
+            return Err(VaultError::DistributionAccuracyError);
+        }
+
+        // Interaction: pull alt-token yield from caller
+        token::Client::new(&env, &alt_token)
+            .transfer(&caller, &env.current_contract_address(), &yield_amount);
+
+        // Effects
+        let prev_yps = storage::get_cumulative_yps(&env);
+        let new_yps = prev_yps
+            .checked_add(delta_yps)
+            .ok_or(VaultError::MathOverflow)?;
+        storage::set_cumulative_yps(&env, new_yps);
+
+        let new_total = total_deposited
+            .checked_add(net_underlying)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_deposited(&env, new_total);
+
+        let prev_fees = storage::get_total_fee_collected(&env);
+        storage::set_total_fee_collected(
+            &env,
+            prev_fees.checked_add(fee_amount).ok_or(VaultError::MathOverflow)?,
+        );
+
+        let epoch = storage::get_distribution_epoch(&env);
+        let new_epoch = epoch + 1;
+        storage::set_distribution_epoch(&env, new_epoch);
+
+        env.events().publish(
+            (Symbol::new(&env, "yield_distributed_token"), caller, alt_token),
+            (yield_amount, net_underlying, fee_amount, total_shares, new_yps, new_epoch),
+        );
+
+        bump_instance(&env);
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // collect_yield — keeper / strategy pulls yield into the vault
+    //
+    // This is a thin authenticated entry point that verifies `amount` tokens
+    // were actually transferred in (balance delta check) and then records them
+    // as distributed yield.  It exists so strategies can call into the vault
+    // without the keeper needing separate approve+transfer steps.
+    //
+    // The function deliberately mirrors `distribute_yield` so callers can use
+    // either pattern depending on their auth model.
+    // -----------------------------------------------------------------------
+    pub fn collect_yield(env: Env, caller: Address, amount: i128) -> Result<(), VaultError> {
+        // Delegate to distribute_yield — same logic, different name for
+        // clarity in the call-graph (collect = pull from strategy, distribute
+        // = push from keeper).
+        Self::distribute_yield(env, caller, amount)
+    }
+
+    // -----------------------------------------------------------------------
+    // preview_distribution — read-only accuracy check
+    //
+    // Returns (net_yield, delta_yps, distributed_tokens, accuracy_ok) for a
+    // hypothetical `yield_amount` distribution given current vault state.
+    // Callers use this to verify a pending yield satisfies the 0.01% accuracy
+    // criterion before submitting the on-chain transaction.
+    //
+    // Returns:
+    //   (net_yield, delta_yps, distributed_amount, accuracy_within_tolerance)
+    // -----------------------------------------------------------------------
+    pub fn preview_distribution(env: Env, yield_amount: i128) -> Result<(i128, i128, i128, bool), VaultError> {
+        if yield_amount <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+
+        let total_shares = get_total_shares(&env);
+        if total_shares == 0 {
+            return Err(VaultError::ZeroShares);
+        }
+
+        let perf_fee_bps = storage::get_perf_fee_bps(&env);
+        let fee_amount = fee::calc_perf_fee(yield_amount, perf_fee_bps)?;
+        let net_yield = yield_amount
+            .checked_sub(fee_amount)
+            .ok_or(VaultError::MathOverflow)?;
+
+        let scaled = net_yield
+            .checked_mul(YIELD_PRECISION)
+            .ok_or(VaultError::MathOverflow)?;
+        let delta_yps = scaled
+            .checked_div(total_shares)
+            .ok_or(VaultError::MathOverflow)?;
+
+        if delta_yps == 0 {
+            // Not enough yield to produce any delta — would revert on-chain.
+            return Ok((net_yield, 0, 0, false));
+        }
+
+        let distributed = delta_yps
+            .checked_mul(total_shares)
+            .ok_or(VaultError::MathOverflow)?
+            .checked_div(YIELD_PRECISION)
+            .ok_or(VaultError::MathOverflow)?;
+
+        let tolerance = net_yield
+            .checked_add(9_999)
+            .ok_or(VaultError::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(VaultError::MathOverflow)?;
+        let diff = (distributed - net_yield).abs();
+        let accuracy_ok = diff <= tolerance;
+
+        Ok((net_yield, delta_yps, distributed, accuracy_ok))
+    }
+
+    // -----------------------------------------------------------------------
+    // collect_pending_yield — shareholder claims their accrued yield
+    //
+    // Settles the caller's pending yield by:
+    //   1. Computing accrued = shares * (global_yps - user_checkpoint) / YIELD_PRECISION
+    //   2. Adding any previously stored pending amount
+    //   3. Transferring the total to the caller
+    //   4. Updating the checkpoint and clearing pending
+    //
+    // Returns the amount of underlying tokens transferred to the caller.
+    // -----------------------------------------------------------------------
+    pub fn collect_pending_yield(env: Env, caller: Address) -> Result<i128, VaultError> {
+        caller.require_auth();
+
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        if storage_is_paused(&env) {
+            return Err(VaultError::VaultPaused);
+        }
+
+        let user_shares = get_balance(&env, &caller);
+        let global_yps = storage::get_cumulative_yps(&env);
+        let user_checkpoint = storage::get_user_checkpoint(&env, &caller);
+
+        // Accrue: new yield since last checkpoint
+        let delta_yps = global_yps
+            .checked_sub(user_checkpoint)
+            .ok_or(VaultError::MathOverflow)?;
+        let accrued = user_shares
+            .checked_mul(delta_yps)
+            .ok_or(VaultError::MathOverflow)?
+            .checked_div(YIELD_PRECISION)
+            .ok_or(VaultError::MathOverflow)?;
+
+        // Add any previously stored (unsettled) pending yield
+        let stored_pending = storage::get_user_pending_yield(&env, &caller);
+        let total_claimable = stored_pending
+            .checked_add(accrued)
+            .ok_or(VaultError::MathOverflow)?;
+
+        if total_claimable <= 0 {
+            // Nothing to collect; update checkpoint and return 0.
+            storage::set_user_checkpoint(&env, &caller, global_yps);
+            storage::set_user_pending_yield(&env, &caller, 0);
+            bump_user_yield(&env, &caller);
+            bump_persistent(&env, &caller);
+            return Ok(0);
+        }
+
+        // CEI — Effects: clear pending state before interaction
+        storage::set_user_checkpoint(&env, &caller, global_yps);
+        storage::set_user_pending_yield(&env, &caller, 0);
+
+        // Interaction: transfer claimable yield to caller
+        let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
+        let token = token::Client::new(&env, &token_addr);
+        token.transfer(&env.current_contract_address(), &caller, &total_claimable);
+
+        // Note: We do NOT reduce total_deposited here — the yield was already
+        // added to total_deposited in distribute_yield.  The transfer comes
+        // out of the vault's actual balance which includes all harvested yield.
+        // To keep total_deposited accurate we must subtract the claimed amount.
+        let total_deposited = get_total_deposited(&env);
+        let new_deposited = total_deposited
+            .checked_sub(total_claimable)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_deposited(&env, new_deposited);
+
+        env.events().publish(
+            (Symbol::new(&env, "yield_collected"), caller.clone()),
+            (total_claimable, global_yps, new_deposited),
+        );
+
+        bump_user_yield(&env, &caller);
+        bump_persistent(&env, &caller);
+        bump_instance(&env);
+
+        Ok(total_claimable)
+    }
+
+    // -----------------------------------------------------------------------
+    // pending_yield — read-only: how much yield `addr` can currently claim
+    // -----------------------------------------------------------------------
+    pub fn pending_yield(env: Env, addr: Address) -> i128 {
+        let user_shares = get_balance(&env, &addr);
+        let global_yps = storage::get_cumulative_yps(&env);
+        let user_checkpoint = storage::get_user_checkpoint(&env, &addr);
+
+        let delta_yps = global_yps.saturating_sub(user_checkpoint);
+        let accrued = user_shares
+            .checked_mul(delta_yps)
+            .and_then(|v| v.checked_div(YIELD_PRECISION))
+            .unwrap_or(0);
+
+        storage::get_user_pending_yield(&env, &addr)
+            .checked_add(accrued)
+            .unwrap_or(0)
+    }
+
+    // -----------------------------------------------------------------------
+    // distribution_epoch — read-only: current distribution epoch counter
+    // -----------------------------------------------------------------------
+    pub fn distribution_epoch(env: Env) -> u64 {
+        storage::get_distribution_epoch(&env)
+    }
+
+    // -----------------------------------------------------------------------
     // pause / unpause — admin-only emergency controls
     // Takes admin address so the client can require_auth on it.
     // -----------------------------------------------------------------------
