@@ -12,6 +12,10 @@ pub use errors::VaultError;
 mod test;
 #[cfg(test)]
 mod security_test;
+#[cfg(test)]
+mod seed_ratio_test;   // Issue #465: first-depositor seed ratio tests
+#[cfg(test)]
+mod cei_fuzz_test;     // Issue #457: fuzz tests for CEI ordering in deposit
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
