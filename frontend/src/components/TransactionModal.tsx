@@ -1,7 +1,17 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { AlertCircle, CheckCircle, XCircle } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle,
+  XCircle,
+  Wallet,
+  PauseCircle,
+  Globe,
+  WifiOff,
+  ExternalLink,
+} from "lucide-react";
+import { getErrorRecovery, type VaultErrorContext } from "@/lib/errorTranslator";
 
 type TxType = "deposit" | "withdraw";
 type Step = 1 | 2 | 3;
@@ -379,30 +389,166 @@ export default function TransactionModal({ type, balance, onClose }: Props) {
             )}
 
             {status === "error" && (
-              <div data-cy="modal-error" className="flex flex-col items-center gap-3">
-                <XCircle size={48} className="text-red-600 dark:text-red-400" />
-                <p className="text-sm text-red-600 dark:text-red-400">
-                  {txError || "Transaction failed"}
-                </p>
-                {retryCount < 3 && (
-                  <button
-                    data-cy="modal-retry-btn"
-                    onClick={handleRetry}
-                    className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-black"
-                  >
-                    Retry {retryCount > 0 && `(${retryCount}/3)`}
-                  </button>
-                )}
-                <button
-                  onClick={() => setStep(1)}
-                  className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold hover:bg-zinc-100 dark:border-zinc-600 dark:hover:bg-zinc-800"
-                >
-                  Start Over
-                </button>
-              </div>
+              <ErrorRecoveryPanel
+                txError={txError}
+                balance={balance}
+                amount={amount}
+                retryCount={retryCount}
+                handleRetry={handleRetry}
+                setStep={setStep}
+                setAmount={setAmount}
+              />
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ErrorRecoveryPanel — renders contextual recovery guidance
+// ---------------------------------------------------------------------------
+
+interface ErrorRecoveryPanelProps {
+  txError: string;
+  balance: string;
+  amount: string;
+  retryCount: number;
+  handleRetry: () => void;
+  setStep: (step: Step) => void;
+  setAmount: (amount: string) => void;
+}
+
+const ICON_MAP: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
+  Wallet,
+  PauseCircle,
+  Globe,
+  WifiOff,
+  XCircle,
+  AlertCircle,
+  CheckCircle,
+  ExternalLink,
+};
+
+const SEVERITY_STYLES: Record<VaultErrorContext["severity"], {
+  border: string;
+  iconClass: string;
+  titleClass: string;
+}> = {
+  error: {
+    border: "border-l-4 border-red-500",
+    iconClass: "text-red-600 dark:text-red-400",
+    titleClass: "text-red-700 dark:text-red-300",
+  },
+  warning: {
+    border: "border-l-4 border-yellow-500",
+    iconClass: "text-yellow-600 dark:text-yellow-400",
+    titleClass: "text-yellow-700 dark:text-yellow-300",
+  },
+  info: {
+    border: "border-l-4 border-blue-500",
+    iconClass: "text-blue-600 dark:text-blue-400",
+    titleClass: "text-blue-700 dark:text-blue-300",
+  },
+};
+
+function ErrorRecoveryPanel({
+  txError,
+  balance,
+  amount,
+  retryCount,
+  handleRetry,
+  setStep,
+  setAmount,
+}: ErrorRecoveryPanelProps) {
+  const recovery = getErrorRecovery(txError || "Transaction failed", {
+    walletBalance: balance,
+    enteredAmount: amount,
+    tokenSymbol: "USDC",
+  });
+
+  const styles = SEVERITY_STYLES[recovery.severity];
+  const IconComponent = ICON_MAP[recovery.icon] ?? XCircle;
+
+  return (
+    <div
+      data-cy="modal-error"
+      className={`w-full rounded-xl bg-zinc-50 dark:bg-zinc-800 p-4 text-left ${styles.border}`}
+    >
+      {/* Header: icon + title */}
+      <div className="flex items-start gap-3 mb-2">
+        <IconComponent size={24} className={`mt-0.5 shrink-0 ${styles.iconClass}`} />
+        <p className={`font-bold text-sm ${styles.titleClass}`}>{recovery.title}</p>
+      </div>
+
+      {/* Descriptive message */}
+      <p className="text-sm text-zinc-600 dark:text-zinc-300 mb-4 pl-9">
+        {recovery.message}
+      </p>
+
+      {/* Action buttons */}
+      <div className="flex flex-col gap-2 pl-9">
+        {recovery.actions.map((recoveryAction) => {
+          if (recoveryAction.action === "external") {
+            return (
+              <a
+                key={recoveryAction.label}
+                href={recoveryAction.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-black dark:hover:bg-zinc-300"
+              >
+                {recoveryAction.label}
+                <ExternalLink size={13} />
+              </a>
+            );
+          }
+
+          if (recoveryAction.action === "retry") {
+            if (retryCount >= 3) return null;
+            return (
+              <button
+                key={recoveryAction.label}
+                data-cy="modal-retry-btn"
+                onClick={handleRetry}
+                className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-black"
+              >
+                {recoveryAction.label}
+                {retryCount > 0 && ` (${retryCount}/3)`}
+              </button>
+            );
+          }
+
+          if (recoveryAction.action === "reduce_amount") {
+            return (
+              <button
+                key={recoveryAction.label}
+                onClick={() => setStep(1)}
+                className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-black"
+              >
+                {recoveryAction.label}
+              </button>
+            );
+          }
+
+          if (recoveryAction.action === "start_over") {
+            return (
+              <button
+                key={recoveryAction.label}
+                onClick={() => {
+                  setAmount("");
+                  setStep(1);
+                }}
+                className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold hover:bg-zinc-100 dark:border-zinc-600 dark:hover:bg-zinc-800"
+              >
+                {recoveryAction.label}
+              </button>
+            );
+          }
+
+          return null;
+        })}
       </div>
     </div>
   );
