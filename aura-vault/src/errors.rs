@@ -18,8 +18,10 @@ pub enum VaultError {
     StorageLayoutMismatch  = 10,
     VaultPaused            = 11,
     BalanceMismatch        = 12,
-    /// Harvest called before the minimum cooldown period has elapsed.
-    HarvestCooldown        = 13,
-    /// Deposit would push total assets above the configured TVL cap.
-    TvlCapExceeded         = 14,
+    /// Governance: proposal timelock has not expired yet
+    TimelockNotExpired     = 13,
+    /// Governance: proposal has not been approved by enough signers
+    NotApproved            = 14,
+    /// Governance: signer has already cast a vote on this proposal
+    AlreadyVoted           = 15,
 }
