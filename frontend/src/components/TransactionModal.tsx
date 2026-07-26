@@ -1,9 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { AlertCircle, CheckCircle, XCircle, Check } from "lucide-react";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+import { AlertCircle, CheckCircle, XCircle } from "lucide-react";
+import { useHapticsStandalone } from "@/components/HapticFeedback";
 
 type TxType = "deposit" | "withdraw";
 /** 1 = Amount, 2 = Review/Sign, 3 = Submit, 4 = Confirmed */
@@ -235,6 +234,7 @@ export default function TransactionModal({ type, balance, onClose }: Props) {
   const [gasLoading, setGasLoading] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { vibrate } = useHapticsStandalone();
 
   useEffect(() => {
     if (step === 1) inputRef.current?.focus();
@@ -292,6 +292,7 @@ export default function TransactionModal({ type, balance, onClose }: Props) {
       await estimateGas(amount);
       setStep(2);
     } else if (step === 2) {
+      vibrate("confirmationOpen"); // 1 short vibration when confirm dialog advances
       setStep(3);
       await handleSubmit();
     }
@@ -312,6 +313,7 @@ export default function TransactionModal({ type, balance, onClose }: Props) {
       if (!res.ok) throw new Error(data.error ?? "Transaction failed");
       setTxHash(data.hash ?? `tx-${Date.now()}`);
       setStatus("success");
+      vibrate("transactionSuccess"); // 2 short vibrations
       setRetryCount(0);
     } catch (err: unknown) {
       const errorMsg =
@@ -319,7 +321,11 @@ export default function TransactionModal({ type, balance, onClose }: Props) {
         "Transaction failed";
       setTxError(errorMsg);
       setStatus("error");
-      if (retrying) setRetryCount((prev) => prev + 1);
+      vibrate("transactionFailure"); // 3 long vibrations
+
+      if (retrying) {
+        setRetryCount((prev) => prev + 1);
+      }
     }
   }
 
