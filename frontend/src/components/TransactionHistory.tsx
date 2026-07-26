@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback } from "react";
+import { ArrowDownCircle, ArrowUpCircle, Zap } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,6 +19,7 @@ export interface Transaction {
 export interface TransactionHistoryProps {
   transactions: Transaction[];
   explorerBase?: string; // e.g. "https://stellar.expert/explorer/testnet/tx"
+  tokenSymbol?: string;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -34,10 +36,11 @@ const STATUS_BADGE: Record<Exclude<TxStatus, "all">, string> = {
   failed:    "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
 };
 
-const TYPE_BADGE: Record<Exclude<TxType, "all">, string> = {
-  deposit:  "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
-  withdraw: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300",
-  harvest:  "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
+// Colour classes for icon + text per type
+const TYPE_COLOR: Record<Exclude<TxType, "all">, string> = {
+  deposit:  "text-blue-600 dark:text-blue-400",
+  withdraw: "text-purple-600 dark:text-purple-400",
+  harvest:  "text-orange-500 dark:text-orange-400",
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -50,11 +53,55 @@ function parseAmount(s: string): number {
   return parseFloat(s) || 0;
 }
 
+/** Returns a human-readable relative time string for a given ISO-8601 date string. */
+function getRelativeTime(dateString: string): string {
+  const now = Date.now();
+  const then = new Date(dateString).getTime();
+  const diffMs = now - then;
+  const diffSec = Math.floor(diffMs / 1000);
+
+  if (diffSec < 30) return "just now";
+  if (diffSec < 60) return `${diffSec} seconds ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return diffMin === 1 ? "1 minute ago" : `${diffMin} minutes ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return diffHr === 1 ? "1 hour ago" : `${diffHr} hours ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 30) return diffDay === 1 ? "1 day ago" : `${diffDay} days ago`;
+  const diffMonth = Math.floor(diffDay / 30);
+  if (diffMonth < 12) return diffMonth === 1 ? "1 month ago" : `${diffMonth} months ago`;
+  const diffYear = Math.floor(diffMonth / 12);
+  return diffYear === 1 ? "1 year ago" : `${diffYear} years ago`;
+}
+
+/** Icon component for transaction type. */
+function TypeIcon({ type }: { type: Exclude<TxType, "all"> }) {
+  const cls = `h-4 w-4 shrink-0 ${TYPE_COLOR[type]}`;
+  if (type === "deposit")  return <ArrowDownCircle className={cls} aria-hidden="true" />;
+  if (type === "withdraw") return <ArrowUpCircle   className={cls} aria-hidden="true" />;
+  return <Zap className={cls} aria-hidden="true" />;
+}
+
+/** Format amount with sign prefix and token symbol. */
+function formatAmount(type: Exclude<TxType, "all">, amount: string, symbol: string): string {
+  const num = parseFloat(amount);
+  const sign = type === "withdraw" ? "- " : "+ ";
+  return `${sign}${Math.abs(num).toFixed(2)} ${symbol}`;
+}
+
+/** Amount colour: green for positive (deposit/harvest), red for negative (withdraw). */
+function amountColor(type: Exclude<TxType, "all">): string {
+  return type === "withdraw"
+    ? "text-red-500 dark:text-red-400"
+    : "text-emerald-600 dark:text-emerald-400";
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function TransactionHistory({
   transactions,
   explorerBase = "https://stellar.expert/explorer/testnet/tx",
+  tokenSymbol = "USDC",
 }: TransactionHistoryProps) {
   // Filters
   const [typeFilter, setTypeFilter] = useState<TxType>("all");
@@ -70,6 +117,9 @@ export default function TransactionHistory({
   // Pagination
   const [pageSize, setPageSize] = useState<PageSizeOption>(25);
   const [page, setPage] = useState(1);
+
+  // Compact mode
+  const [compact, setCompact] = useState(false);
 
   // ── Filtering ───────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
@@ -126,6 +176,9 @@ export default function TransactionHistory({
     a.click();
     URL.revokeObjectURL(url);
   }
+
+  // ── Row padding class (compact vs normal) ────────────────────────────────
+  const cellPy = compact ? "py-1.5" : "py-3";
 
   // ── Column header helper ─────────────────────────────────────────────────
   function ColHeader({ field, label }: { field: SortField; label: string }) {
@@ -244,8 +297,22 @@ export default function TransactionHistory({
           </button>
         )}
 
-        {/* Export — pushed to far right */}
-        <div className="ml-auto">
+        {/* Right-side controls: Compact toggle + Export CSV */}
+        <div className="ml-auto flex items-center gap-2">
+          {/* Compact toggle */}
+          <button
+            onClick={() => setCompact((c) => !c)}
+            aria-pressed={compact}
+            className={`h-9 rounded-lg border px-3 text-sm font-medium transition-colors ${
+              compact
+                ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-black"
+                : "border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            }`}
+          >
+            Compact
+          </button>
+
+          {/* Export CSV */}
           <button
             onClick={exportCsv}
             className="h-9 rounded-lg bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-black dark:hover:bg-zinc-300"
@@ -264,23 +331,27 @@ export default function TransactionHistory({
               <th
                 scope="col"
                 className="whitespace-nowrap px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
+                style={{ minWidth: "120px" }}
               >
                 Type
               </th>
               <ColHeader field="amount" label="Amount" />
               <ColHeader field="status" label="Status" />
-              <th
-                scope="col"
-                className="whitespace-nowrap px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
-              >
-                Hash
-              </th>
+              {/* Hash column — hidden in compact mode */}
+              {!compact && (
+                <th
+                  scope="col"
+                  className="whitespace-nowrap px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
+                >
+                  Hash
+                </th>
+              )}
             </tr>
           </thead>
-          <tbody className="divide-y divide-zinc-50 dark:divide-zinc-800">
+          <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
             {pageRows.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-10 text-center text-sm text-zinc-400">
+                <td colSpan={compact ? 4 : 5} className="py-10 text-center text-sm text-zinc-400">
                   No transactions found.
                 </td>
               </tr>
@@ -290,33 +361,48 @@ export default function TransactionHistory({
                   key={tx.hash}
                   className="hover:bg-zinc-50 dark:hover:bg-zinc-800/40 focus-within:bg-zinc-50 dark:focus-within:bg-zinc-800/40"
                 >
-                  <td className="whitespace-nowrap px-4 py-3 font-mono text-sm text-zinc-700 dark:text-zinc-300">
-                    {new Date(tx.date).toLocaleString()}
+                  {/* Date — relative time with absolute tooltip */}
+                  <td
+                    className={`whitespace-nowrap px-4 ${cellPy} text-sm text-zinc-700 dark:text-zinc-300`}
+                    title={new Date(tx.date).toLocaleString()}
+                  >
+                    {getRelativeTime(tx.date)}
                   </td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${TYPE_BADGE[tx.type]}`}>
+
+                  {/* Type — icon + colour-coded text, no badge pill */}
+                  <td className={`px-4 ${cellPy}`} style={{ minWidth: "120px" }}>
+                    <span className={`inline-flex items-center gap-1.5 text-sm font-medium capitalize ${TYPE_COLOR[tx.type]}`}>
+                      <TypeIcon type={tx.type} />
                       {tx.type}
                     </span>
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 font-mono text-sm text-zinc-700 dark:text-zinc-300">
-                    {tx.amount}
+
+                  {/* Amount — signed, with token symbol, right-aligned, monospace */}
+                  <td className={`whitespace-nowrap px-4 ${cellPy} text-right font-mono text-sm font-medium ${amountColor(tx.type)}`}>
+                    {formatAmount(tx.type, tx.amount, tokenSymbol)}
                   </td>
-                  <td className="px-4 py-3">
+
+                  {/* Status */}
+                  <td className={`px-4 ${cellPy}`}>
                     <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${STATUS_BADGE[tx.status]}`}>
                       {tx.status}
                     </span>
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3">
-                    <a
-                      href={`${explorerBase}/${tx.hash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-mono text-sm text-blue-600 hover:underline dark:text-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 rounded"
-                      aria-label={`View transaction ${tx.hash} on block explorer`}
-                    >
-                      {shortHash(tx.hash)}
-                    </a>
-                  </td>
+
+                  {/* Hash — hidden in compact mode */}
+                  {!compact && (
+                    <td className={`whitespace-nowrap px-4 ${cellPy}`}>
+                      <a
+                        href={`${explorerBase}/${tx.hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono text-sm text-blue-600 hover:underline dark:text-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 rounded"
+                        aria-label={`View transaction ${tx.hash} on block explorer`}
+                      >
+                        {shortHash(tx.hash)}
+                      </a>
+                    </td>
+                  )}
                 </tr>
               ))
             )}
