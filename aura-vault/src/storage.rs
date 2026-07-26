@@ -11,6 +11,19 @@ pub enum DataKey {
     LayoutVersion,
     /// Emergency pause flag — when true, deposit/withdraw/harvest are blocked.
     Paused,
+    Treasury,
+    PerfFeeBps,
+    MgmtFeeBps,
+    TotalFeeCollected,
+    LastMgmtFeeTime,
+    /// Whitelisted alternative yield tokens (Issue #48)
+    YieldToken(Address),
+    /// Maximum total assets allowed (0 = unlimited). Issue #467.
+    TvlCap,
+    /// Timestamp of the last successful harvest (ledger timestamp). Issue #471.
+    LastHarvestTime,
+    /// Minimum seconds between harvests (0 = no cooldown). Issue #471.
+    HarvestCooldownSecs,
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -117,6 +130,23 @@ pub fn set_last_mgmt_fee_time(env: &Env, time: u64) {
 }
 
 // ---------------------------------------------------------------------------
+// Yield-token whitelist helpers (instance storage — Issue #48)
+// ---------------------------------------------------------------------------
+
+pub fn is_yield_token(env: &Env, token: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::YieldToken(token.clone()))
+        .unwrap_or(false)
+}
+
+pub fn set_yield_token(env: &Env, token: &Address, enabled: bool) {
+    env.storage()
+        .instance()
+        .set(&DataKey::YieldToken(token.clone()), &enabled);
+}
+
+// ---------------------------------------------------------------------------
 // TTL bump helpers
 // ---------------------------------------------------------------------------
 
@@ -173,4 +203,39 @@ pub fn is_paused(env: &Env) -> bool {
 
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&DataKey::Paused, &paused);
+}
+
+// ---------------------------------------------------------------------------
+// TVL cap helpers (instance storage) — Issue #467
+// 0 means unlimited.
+// ---------------------------------------------------------------------------
+
+pub fn get_tvl_cap(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::TvlCap).unwrap_or(0)
+}
+
+pub fn set_tvl_cap(env: &Env, cap: i128) {
+    env.storage().instance().set(&DataKey::TvlCap, &cap);
+}
+
+// ---------------------------------------------------------------------------
+// Harvest cooldown helpers (instance storage) — Issue #471
+// ---------------------------------------------------------------------------
+
+/// Timestamp (ledger unix seconds) of the last successful harvest. 0 = never.
+pub fn get_last_harvest_time(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::LastHarvestTime).unwrap_or(0)
+}
+
+pub fn set_last_harvest_time(env: &Env, ts: u64) {
+    env.storage().instance().set(&DataKey::LastHarvestTime, &ts);
+}
+
+/// Minimum seconds that must elapse between harvests. 0 = no cooldown.
+pub fn get_harvest_cooldown_secs(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::HarvestCooldownSecs).unwrap_or(0)
+}
+
+pub fn set_harvest_cooldown_secs(env: &Env, secs: u64) {
+    env.storage().instance().set(&DataKey::HarvestCooldownSecs, &secs);
 }
