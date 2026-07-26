@@ -1571,3 +1571,358 @@ fn test_harvest_zero_from_uninit_returns_zero_amount() {
     let result = vault.try_harvest(&keeper, &0);
     assert_eq!(result, Err(Ok(VaultError::ZeroAmount)));
 }
+
+// ===========================================================================
+// SEP-41 TRANSFER / ALLOWANCE TESTS
+//
+// These tests verify the SEP-41 token interface (transfer, approve,
+// transfer_from, allowance) on the underlying Stellar Asset Contract that
+// the vault wraps, and confirm that the vault's own token-moving paths
+// (deposit / withdraw) are correctly blocked when the vault is paused.
+//
+// The Stellar Asset Contract (SAC) is a compliant SEP-41 implementation.
+// Failure conditions (over-balance, over-allowance) trap the executor, so
+// they are covered with #[should_panic] tests as prescribed by the spec.
+// ===========================================================================
+
+mod sep41_transfer_allowance {
+    extern crate std;
+
+    use soroban_sdk::{
+        symbol_short,
+        testutils::Address as _,
+        token::Client as TokenClient,
+        token::StellarAssetClient,
+        Address, Env,
+    };
+
+    use crate::{AuraVault, AuraVaultClient, VaultError};
+
+    // -----------------------------------------------------------------------
+    // Module-level setup helper
+    // Mirrors the top-level `setup()` so this module is self-contained.
+    // Returns (env, token_address, admin).
+    // -----------------------------------------------------------------------
+    fn token_setup() -> (Env, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token_addr = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        (env, token_addr, admin)
+    }
+
+    /// Mint `amount` underlying tokens to `recipient` via the SAC admin.
+    fn mint(env: &Env, token: &Address, admin: &Address, recipient: &Address, amount: i128) {
+        StellarAssetClient::new(env, token).mint(recipient, &amount);
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: deploy + initialise the vault alongside a token; returns
+    // (env, vault_client, vault_address, token_address, admin).
+    // -----------------------------------------------------------------------
+    fn vault_setup() -> (Env, AuraVaultClient<'static>, Address, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token_addr = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let vault_addr = env.register_contract(None, AuraVault);
+        let vault = AuraVaultClient::new(&env, &vault_addr);
+        vault.initialize(&admin, &token_addr);
+        (env, vault, vault_addr, token_addr, admin)
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 1 — transfer correct amount between addresses
+    //
+    // Criterion: after token.transfer(from → to, amount), `to`'s balance
+    // increases by exactly `amount` and `from`'s balance decreases by the
+    // same amount.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_sep41_transfer_correct_amount() {
+        let (env, token_addr, admin) = token_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        mint(&env, &token_addr, &admin, &alice, 1_000_000);
+
+        let alice_before = token.balance(&alice);
+        let bob_before = token.balance(&bob);
+
+        token.transfer(&alice, &bob, &400_000);
+
+        assert_eq!(
+            token.balance(&alice),
+            alice_before - 400_000,
+            "alice balance should decrease by transferred amount"
+        );
+        assert_eq!(
+            token.balance(&bob),
+            bob_before + 400_000,
+            "bob balance should increase by transferred amount"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 2 — transfer more than balance → panic (trap)
+    //
+    // Criterion: the SAC traps when the sender tries to transfer more tokens
+    // than their available balance. Per the SEP-41 spec, failure conditions
+    // are signalled by trapping rather than returning an error code.
+    // -----------------------------------------------------------------------
+    #[test]
+    #[should_panic]
+    fn test_sep41_transfer_more_than_balance_panics() {
+        let (env, token_addr, admin) = token_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        mint(&env, &token_addr, &admin, &alice, 500);
+
+        // Attempting to transfer 501 when alice only has 500 must trap.
+        token.transfer(&alice, &bob, &501);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3 — approve then transfer_from within allowance
+    //
+    // Criterion: after alice approves spender for `amount` (with a far-future
+    // live_until_ledger), spender can call transfer_from and the tokens move
+    // correctly; the allowance is consumed by the transferred amount.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_sep41_approve_then_transfer_from_within_allowance() {
+        let (env, token_addr, admin) = token_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        mint(&env, &token_addr, &admin, &alice, 1_000_000);
+
+        // Approve spender to spend up to 300_000 from alice's balance.
+        // live_until_ledger is set far in the future (current + 10_000).
+        let live_until = env.ledger().sequence() + 10_000;
+        token.approve(&alice, &spender, &300_000, &live_until);
+
+        // Verify the allowance was recorded.
+        assert_eq!(
+            token.allowance(&alice, &spender),
+            300_000,
+            "allowance should be 300_000 after approve"
+        );
+
+        let alice_before = token.balance(&alice);
+        let bob_before = token.balance(&bob);
+
+        // Spender transfers 200_000 from alice to bob.
+        token.transfer_from(&spender, &alice, &bob, &200_000);
+
+        assert_eq!(
+            token.balance(&alice),
+            alice_before - 200_000,
+            "alice's balance should decrease by 200_000"
+        );
+        assert_eq!(
+            token.balance(&bob),
+            bob_before + 200_000,
+            "bob's balance should increase by 200_000"
+        );
+        // Remaining allowance must be reduced by the transferred amount.
+        assert_eq!(
+            token.allowance(&alice, &spender),
+            100_000,
+            "allowance should be reduced to 100_000 after partial transfer_from"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 4 — transfer_from exceeding allowance → panic (trap)
+    //
+    // Criterion: attempting to transfer_from more than the approved allowance
+    // traps the executor. Aligns with the SEP-41 failure-condition spec.
+    // -----------------------------------------------------------------------
+    #[test]
+    #[should_panic]
+    fn test_sep41_transfer_from_exceeds_allowance_panics() {
+        let (env, token_addr, admin) = token_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        mint(&env, &token_addr, &admin, &alice, 1_000_000);
+
+        let live_until = env.ledger().sequence() + 10_000;
+        // Approve only 100 stroops.
+        token.approve(&alice, &spender, &100, &live_until);
+
+        // Attempt to transfer 101 — must trap.
+        token.transfer_from(&spender, &alice, &bob, &101);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5 — Transfer event emitted with correct fields
+    //
+    // Criterion: after a successful token.transfer call, env.events().all()
+    // contains an event from the token contract whose topics Vec starts with
+    //   topics[0] = Symbol("transfer")
+    //   topics[1] = from: Address
+    //   topics[2] = to: Address
+    // conforming to the SEP-41 event specification.
+    //
+    // We use soroban_sdk::IntoVal to convert the expected Rust values to
+    // soroban_sdk::Val for comparison with the stored raw event entries.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_sep41_transfer_event_emitted_with_correct_fields() {
+        use soroban_sdk::{testutils::Events as _, IntoVal, Val};
+
+        let (env, token_addr, admin) = token_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        mint(&env, &token_addr, &admin, &alice, 1_000_000);
+
+        let transfer_amount: i128 = 250_000;
+        token.transfer(&alice, &bob, &transfer_amount);
+
+        // env.events().all() returns a soroban_sdk::Vec<(Address, Vec<Val>, Val)>.
+        // Convert to std Vec for ergonomic iteration.
+        let all_events = env.events().all();
+        let events_std: std::vec::Vec<_> = all_events.iter().collect();
+
+        // The SEP-41 / SAC "transfer" event format:
+        //   topics[0] = Symbol("transfer")
+        //   topics[1] = from: Address
+        //   topics[2] = to: Address
+        //   data      = amount: i128 (legacy SAC format)
+        let transfer_sym: Val = symbol_short!("transfer").into_val(&env);
+        let alice_val: Val = alice.clone().into_val(&env);
+        let bob_val: Val = bob.clone().into_val(&env);
+
+        let found = events_std.iter().any(|(contract_id, topics, _data)| {
+            // Event must come from the token contract.
+            if *contract_id != token_addr {
+                return false;
+            }
+            // The topics Vec must have at least 3 entries.
+            if topics.len() < 3 {
+                return false;
+            }
+            // topics[0] == Symbol("transfer")
+            let t0: Val = topics.get(0).unwrap();
+            if t0 != transfer_sym {
+                return false;
+            }
+            // topics[1] == alice (from)
+            let t1: Val = topics.get(1).unwrap();
+            if t1 != alice_val {
+                return false;
+            }
+            // topics[2] == bob (to)
+            let t2: Val = topics.get(2).unwrap();
+            t2 == bob_val
+        });
+
+        assert!(
+            found,
+            "expected a SEP-41 'transfer' event \
+             (from=alice, to=bob, amount={transfer_amount}) \
+             but none matched in the event list"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 6 — Token transfer blocked while vault is paused
+    //
+    // Criterion: the vault's deposit and withdraw functions call
+    // token.transfer internally. When the vault is paused, both functions
+    // must return VaultPaused without executing any token transfer, leaving
+    // token balances unchanged.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_sep41_transfer_blocked_while_vault_paused() {
+        let (env, vault, _vault_addr, token_addr, admin) = vault_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        mint(&env, &token_addr, &admin, &alice, 1_000_000);
+
+        // Seed alice's position so she has shares to withdraw later.
+        vault.deposit(&alice, &500_000);
+        let shares = vault.balance_of(&alice);
+        assert!(shares > 0, "alice should have shares after deposit");
+
+        // --- Pause the vault ---
+        vault.pause();
+        assert!(vault.is_paused(), "vault must be paused");
+
+        // Record balances *after* pause, *before* any blocked operations.
+        let alice_token_balance_before = token.balance(&alice);
+        let vault_token_balance_before = token.balance(&_vault_addr);
+        let vault_total_assets_before = vault.total_assets();
+        let alice_shares_before = vault.balance_of(&alice);
+
+        // Attempt deposit while paused → must fail with VaultPaused.
+        let deposit_result = vault.try_deposit(&alice, &500_000);
+        assert_eq!(
+            deposit_result,
+            Err(Ok(VaultError::VaultPaused)),
+            "deposit must be blocked with VaultPaused when vault is paused"
+        );
+
+        // Attempt withdraw while paused → must fail with VaultPaused.
+        let withdraw_result = vault.try_withdraw(&alice, &shares);
+        assert_eq!(
+            withdraw_result,
+            Err(Ok(VaultError::VaultPaused)),
+            "withdraw must be blocked with VaultPaused when vault is paused"
+        );
+
+        // Confirm that no token balances changed — no transfer occurred.
+        assert_eq!(
+            token.balance(&alice),
+            alice_token_balance_before,
+            "alice's token balance must be unchanged while vault is paused"
+        );
+        assert_eq!(
+            token.balance(&_vault_addr),
+            vault_token_balance_before,
+            "vault's token balance must be unchanged while vault is paused"
+        );
+        assert_eq!(
+            vault.total_assets(),
+            vault_total_assets_before,
+            "vault total_assets must be unchanged while paused"
+        );
+        assert_eq!(
+            vault.balance_of(&alice),
+            alice_shares_before,
+            "alice's share balance must be unchanged while vault is paused"
+        );
+
+        // --- Unpause and verify operations resume ---
+        vault.unpause();
+        assert!(!vault.is_paused(), "vault must be unpaused");
+
+        // Deposit must succeed after unpause.
+        let new_shares = vault.deposit(&alice, &100_000);
+        assert!(
+            new_shares > 0,
+            "deposit should succeed and mint shares after unpause"
+        );
+    }
+}
