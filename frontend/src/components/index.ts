@@ -9,6 +9,7 @@ export { default as LazyImage } from "./LazyImage";
 export { default as PageTransition } from "./PageTransition";
 
 // Named exports
+export { VaultComparison, type VaultInfo, type VaultComparisonProps } from "./VaultComparison";
 export { ThemeToggle } from "./ThemeToggle";
 export { LanguageSwitcher } from "./LanguageSwitcher";
 export { Skeleton } from "./Skeleton";
