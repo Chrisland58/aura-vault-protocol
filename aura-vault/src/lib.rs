@@ -12,6 +12,8 @@ pub use errors::VaultError;
 mod test;
 #[cfg(test)]
 mod security_test;
+#[cfg(test)]
+pub mod invariants;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
@@ -479,6 +481,13 @@ impl AuraVault {
     // -----------------------------------------------------------------------
     pub fn total_assets(env: Env) -> i128 {
         get_total_deposited(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // total_shares  (read-only)
+    // -----------------------------------------------------------------------
+    pub fn total_shares(env: Env) -> i128 {
+        get_total_shares(&env)
     }
 
     // -----------------------------------------------------------------------
