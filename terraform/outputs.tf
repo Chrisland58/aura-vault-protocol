@@ -81,15 +81,49 @@ output "db_master_secret_arn" {
   sensitive   = true
 }
 
-# Issue #517: Frontend deploy role ARN (for GitHub Actions OIDC)
-output "frontend_deploy_role_arn" {
-  description = "IAM role ARN for GitHub Actions frontend deploy (S3 sync + CloudFront invalidation)"
-  value       = aws_iam_role.frontend_deploy.arn
+# ── Issue #520: WAF Outputs ───────────────────────────────────────────────
+
+output "waf_web_acl_arn" {
+  description = "ARN of the WAF Web ACL protecting the ALB"
+  value       = aws_wafv2_web_acl.main.arn
 }
 
-# Issue #516: Read replica endpoint
-output "rds_replica_endpoint" {
-  description = "RDS read replica endpoint (for analytics/read-only queries)"
-  value       = var.enable_read_replica ? aws_db_instance.replica[0].endpoint : null
+output "waf_logs_bucket_name" {
+  description = "S3 bucket name storing WAF access logs"
+  value       = aws_s3_bucket.waf_logs.id
+}
+
+output "waf_alerts_topic_arn" {
+  description = "SNS topic ARN for WAF blocked-request spike alerts"
+  value       = aws_sns_topic.waf_alerts.arn
+}
+
+# ── Issue #521: RDS Snapshot Test Outputs ─────────────────────────────────
+
+output "snapshot_test_lambda_arn" {
+  description = "ARN of the RDS snapshot restore drill Lambda function"
+  value       = aws_lambda_function.rds_snapshot_test.arn
+}
+
+output "snapshot_test_sns_topic_arn" {
+  description = "SNS topic ARN for snapshot test results and alerts"
+  value       = aws_sns_topic.snapshot_test_results.arn
+}
+
+# ── Issue #523: Multi-Region / DR Outputs ─────────────────────────────────
+
+output "dr_replica_endpoint" {
+  description = "Endpoint of the cross-region RDS read replica in the DR region"
+  value       = aws_db_instance.dr_replica.endpoint
   sensitive   = true
+}
+
+output "failover_alerts_topic_arn" {
+  description = "SNS topic ARN for multi-region failover alerts"
+  value       = aws_sns_topic.failover_alerts.arn
+}
+
+output "primary_health_check_id" {
+  description = "Route 53 health check ID monitoring the primary ALB"
+  value       = aws_route53_health_check.primary_alb.id
 }

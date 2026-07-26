@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import WalletConnect from "./WalletConnect";
 import VaultActions from "./VaultActions";
+import { useOnboarding } from "@/components/OnboardingChecklist";
 
 interface VaultStats {
   tvl: string;
@@ -92,6 +93,12 @@ export default function VaultDashboard() {
   const [loading, setLoading] = useState(true);
   const [liveMsg, setLiveMsg] = useState("");
   const wsRef = useRef<WebSocket | null>(null);
+  const { markComplete } = useOnboarding();
+
+  // Mark "view_dashboard" milestone when dashboard is first viewed
+  useEffect(() => {
+    markComplete("view_dashboard");
+  }, [markComplete]);
 
   const fetchStats = useCallback(async () => {
     try {

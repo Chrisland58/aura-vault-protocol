@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "size": "size-limit",
+    "size:json": "size-limit --json"
   },
   "dependencies": {
     "@coinbase/wallet-sdk": "^4.0.2",
@@ -26,12 +28,14 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
+    "@size-limit/file": "11.1.6",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
+    "size-limit": "11.1.6",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vite": "^6.4.3",
