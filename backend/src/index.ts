@@ -7,6 +7,10 @@ import {
   userRateLimiter,
 } from "./middleware/rateLimitMiddleware.js";
 import {
+  loggingMiddleware,
+  errorLoggingMiddleware,
+} from "./middleware/loggingMiddleware.js";
+import {
   generateTokens,
   getUserSessions,
   logout,
@@ -22,6 +26,7 @@ import { gasRouter } from "./routes/gasRoutes.js";
 import { yieldRouter } from "./routes/yieldRoutes.js";
 import { startWorker, stopWorker } from "./queue.js";
 import { queueRouter } from "./routes/queueRoutes.js";
+import { analyticsRouter } from "./routes/analyticsRoutes.js";
 import { warmCache } from "./services/defi.js";
 import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
 import { startYieldWorker, stopYieldWorker } from "./services/yieldWorker.js";
@@ -29,6 +34,7 @@ import { startYieldWorker, stopYieldWorker } from "./services/yieldWorker.js";
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(loggingMiddleware());
 app.use(globalIpRateLimiter(["/api/health"]));
 
 app.post("/api/auth/login", authRateLimiter(), async (req, res) => {
@@ -87,6 +93,10 @@ app.use("/api/v1/user/portfolio", authenticate, portfolioRouter);
 app.use("/api/v1/gas", gasRouter);
 app.use("/api/v1/yield", yieldRouter);
 app.use("/api/v1/queue", queueRouter);
+app.use("/api/portfolio", analyticsRouter);
+
+// Error logging must come after routes so it can capture route errors
+app.use(errorLoggingMiddleware());
 
 app.get("/api/health", async (_req, res) => {
   const redisHealthy = await pingRedis();
