@@ -18,4 +18,8 @@ pub enum VaultError {
     StorageLayoutMismatch  = 10,
     VaultPaused            = 11,
     BalanceMismatch        = 12,
+    /// Harvest called before the minimum cooldown period has elapsed.
+    HarvestCooldown        = 13,
+    /// Deposit would push total assets above the configured TVL cap.
+    TvlCapExceeded         = 14,
 }
