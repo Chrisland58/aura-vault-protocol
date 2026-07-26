@@ -15,7 +15,7 @@
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "express": "^5.1.0",
-    "express-rate-limit": "^7.5.0",
+    "express-rate-limit": "^8.6.0",
     "handlebars": "^4.7.9",
     "ioredis": "^5.4.2",
     "jsonwebtoken": "^9.0.2",
