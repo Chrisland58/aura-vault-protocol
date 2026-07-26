@@ -21,7 +21,7 @@ soroban-sdk = { version = "22", default-features = true }
 
 [dev-dependencies]
 soroban-sdk = { version = "22", features = ["testutils"] }
-proptest = "=1.4.0"
+proptest = "=1.11.0"
 # Pin ed25519-dalek to 2.x to stay compatible with soroban-env-host 22.1.3
 # which uses ChaCha20Rng from rand_chacha 0.3 (rand_core 0.6).
 # ed25519-dalek 3.0 requires rand_core 0.10 which is incompatible.
