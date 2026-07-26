@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/ThemeProvider";
-import HeaderActions from "./HeaderActions";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import MobileNavHeader from "@/components/MobileNavHeader";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -40,10 +42,24 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 transition-colors duration-200">
         <ThemeProvider>
-          <header className="flex items-center justify-between px-6 py-3 border-b border-zinc-200 dark:border-zinc-800">
+          {/* Desktop header — hidden on mobile; mobile header shown instead */}
+          <header className="hidden sm:flex items-center justify-between px-6 py-3 border-b border-zinc-200 dark:border-zinc-800">
             <a href="/" className="text-sm font-semibold tracking-tight">Aura Vault</a>
-            <HeaderActions />
+            <div className="flex items-center gap-4">
+              <nav className="flex gap-4 text-sm" aria-label="Main navigation">
+                <a href="/faq" className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors">FAQ</a>
+                <a href="/settings" className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors">Settings</a>
+              </nav>
+              <LanguageSwitcher />
+              <ThemeToggle />
+            </div>
           </header>
+
+          {/* Mobile header with hamburger — hidden on sm+ */}
+          <div className="sm:hidden">
+            <MobileNavHeader />
+          </div>
+
           {children}
         </ThemeProvider>
       </body>

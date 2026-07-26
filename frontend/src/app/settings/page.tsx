@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { HapticsToggle } from "@/components/HapticsToggle";
 import "@/lib/i18n";
 
 interface Settings {
@@ -167,6 +168,12 @@ export default function SettingsPage() {
               />
             </label>
           </div>
+        </section>
+
+        {/* Haptic Feedback */}
+        <section className="mb-8">
+          <h2 className="text-lg font-medium mb-3">Haptic Feedback</h2>
+          <HapticsToggle />
         </section>
 
         {/* Danger Zone */}
