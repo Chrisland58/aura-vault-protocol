@@ -14,12 +14,11 @@ export { LanguageSwitcher } from "./LanguageSwitcher";
 export { Skeleton } from "./Skeleton";
 export { ThemeProvider, useTheme } from "./ThemeProvider";
 export {
-  HapticsProvider,
-  useHaptics,
-  useHapticsStandalone,
-  type HapticPattern,
-} from "./HapticFeedback";
-export { HapticsToggle } from "./HapticsToggle";
+  CriticalMessageProvider,
+  useCriticalMessage,
+  type CriticalMessage,
+  type CriticalMessageType,
+} from "./CriticalMessageAck";
 export {
   NotificationProvider,
   NotificationCenter,
