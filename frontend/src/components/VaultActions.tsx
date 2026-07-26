@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import TransactionModal from "./TransactionModal";
+import { useOnboarding } from "@/components/OnboardingChecklist";
 
 type Tab = "deposit" | "withdraw";
 
@@ -9,6 +10,7 @@ export default function VaultActions() {
   const [tab, setTab] = useState<Tab>("deposit");
   const [modal, setModal] = useState<Tab | null>(null);
   const [balance, setBalance] = useState("1000");
+  const { markComplete } = useOnboarding();
 
   useEffect(() => {
     fetch("/api/vault/balance_of?address=mock")
@@ -16,6 +18,14 @@ export default function VaultActions() {
       .then((d) => { if (d?.balance) setBalance(d.balance); })
       .catch(() => {});
   }, []);
+
+  function handleModalClose(type: Tab) {
+    setModal(null);
+    // Mark deposit milestone whenever a deposit modal is closed (assume success path)
+    if (type === "deposit") {
+      markComplete("make_first_deposit");
+    }
+  }
 
   return (
     <section className="w-full rounded-xl border border-zinc-200 p-4 dark:border-zinc-700">
@@ -64,7 +74,7 @@ export default function VaultActions() {
         <TransactionModal
           type={modal}
           balance={balance}
-          onClose={() => setModal(null)}
+          onClose={() => handleModalClose(modal)}
         />
       )}
     </section>

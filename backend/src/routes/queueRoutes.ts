@@ -1,5 +1,6 @@
-import { Router } from "express";
+import { Router, Request, Response } from "express";
 import { queueMetrics, listJobs, getJob, getDeadLetterJobs } from "../queue.js";
+import { parsePagination, paginateArray } from "../middleware/paginationMiddleware.js";
 
 export const queueRouter = Router();
 
@@ -8,20 +9,36 @@ queueRouter.get("/metrics", (_req, res) => {
   res.json(queueMetrics());
 });
 
-/** GET /api/v1/queue/dashboard — extended metrics + recent jobs */
-queueRouter.get("/dashboard", (_req, res) => {
+/**
+ * GET /api/v1/queue/dashboard — extended metrics + cursor-paginated recent jobs
+ * Query params: cursor, limit (default 20, max 100)
+ */
+queueRouter.get("/dashboard", (req: Request, res: Response) => {
+  const { limit, cursor } = parsePagination(req);
   const metrics = queueMetrics();
-  const recentCompleted = listJobs("completed").slice(-20);
-  const recentDead = getDeadLetterJobs().slice(-10);
   const active = listJobs("active");
-  const waiting = listJobs("waiting");
+  const allWaiting = listJobs("waiting");
+  const allCompleted = listJobs("completed");
+  const allDead = getDeadLetterJobs();
+
+  // Paginate the waiting queue (primary list callers iterate)
+  const { data: waitingPage, nextCursor } = paginateArray(
+    allWaiting,
+    (job: Record<string, unknown>, index: number) => ({
+      id: typeof job.id === "string" ? job.id : String(index),
+      timestamp: typeof job.createdAt === "string" ? job.createdAt : "0",
+    }),
+    limit,
+    cursor,
+  );
 
   res.json({
     metrics,
     active,
-    waiting: waiting.slice(0, 20),
-    recentCompleted,
-    recentDead,
+    waiting: waitingPage,
+    nextCursor,
+    recentCompleted: allCompleted.slice(-20),
+    recentDead: allDead.slice(-10),
     timestamp: new Date().toISOString(),
   });
 });
@@ -36,7 +53,23 @@ queueRouter.get("/jobs/:id", (req, res) => {
   res.json(job);
 });
 
-/** GET /api/v1/queue/dlq — dead-letter queue */
-queueRouter.get("/dlq", (_req, res) => {
-  res.json(getDeadLetterJobs());
+/**
+ * GET /api/v1/queue/dlq — dead-letter queue (cursor-paginated)
+ * Query params: cursor, limit (default 20, max 100)
+ */
+queueRouter.get("/dlq", (req: Request, res: Response) => {
+  const { limit, cursor } = parsePagination(req);
+  const allDead = getDeadLetterJobs();
+
+  const { data, nextCursor } = paginateArray(
+    allDead,
+    (job: Record<string, unknown>, index: number) => ({
+      id: typeof job.id === "string" ? job.id : String(index),
+      timestamp: typeof job.createdAt === "string" ? job.createdAt : "0",
+    }),
+    limit,
+    cursor,
+  );
+
+  res.json({ data, nextCursor });
 });

@@ -1,5 +1,7 @@
 // Default exports
 export { default as WalletConnect } from "./WalletConnect";
+export { OnboardingChecklist, useOnboarding } from "./OnboardingChecklist";
+export type { ChecklistItemId } from "./OnboardingChecklist";
 export { default as TransactionModal } from "./TransactionModal";
 export { default as PerformanceCharts } from "./PerformanceCharts";
 export { default as TransactionHistory } from "./TransactionHistory";
@@ -13,6 +15,13 @@ export { ThemeToggle } from "./ThemeToggle";
 export { LanguageSwitcher } from "./LanguageSwitcher";
 export { Skeleton } from "./Skeleton";
 export { ThemeProvider, useTheme } from "./ThemeProvider";
+export { KeyboardShortcutsHelp } from "./KeyboardShortcutsHelp";
+export {
+  CriticalMessageProvider,
+  useCriticalMessage,
+  type CriticalMessage,
+  type CriticalMessageType,
+} from "./CriticalMessageAck";
 export {
   NotificationProvider,
   NotificationCenter,
