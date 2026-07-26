@@ -16,35 +16,59 @@ export default defineConfig({
     testIdAttribute: "data-cy",
   },
   projects: [
-    // -----------------------------------------------------------------------
-    // Full user-journey suite — single browser, strict 60-second budget
-    // Run with: npx playwright test --project=user-journey
-    // -----------------------------------------------------------------------
-    {
-      name: "user-journey",
-      testMatch: "**/user-journey.spec.ts",
-      timeout: 60_000,
-      use: {
-        ...devices["Desktop Chrome"],
-        // Disable animations so UI transitions don't eat into the time budget
-        reducedMotion: "reduce",
-        // Viewport keeps the full desktop layout visible
-        viewport: { width: 1280, height: 720 },
-      },
-    },
-
-    // -----------------------------------------------------------------------
-    // Cross-browser / responsive matrix (all other specs)
-    // -----------------------------------------------------------------------
-    // Desktop browsers
+    // ── Desktop browsers ────────────────────────────────────────────────────
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
     { name: "firefox",  use: { ...devices["Desktop Firefox"] } },
     { name: "webkit",   use: { ...devices["Desktop Safari"] } },
     { name: "edge",     use: { ...devices["Desktop Edge"] } },
-    // Mobile
+
+    // ── Named mobile viewports (used by mobile.spec.ts) ─────────────────────
+    //
+    //  iphone-se   — 375 × 667  (iPhone SE 3rd gen, smallest common iOS phone)
+    //  iphone-14   — 390 × 844  (iPhone 14 / 15 standard)
+    //  android-lg  — 414 × 896  (large Android, e.g. Pixel XL / Samsung A series)
+    //
+    // Each project inherits Chromium for consistency in CI; the viewport is
+    // what matters for layout testing, not the browser engine.
+    {
+      name: "iphone-se",
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 375, height: 667 },
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        hasTouch: true,
+        isMobile: true,
+        deviceScaleFactor: 2,
+      },
+    },
+    {
+      name: "iphone-14",
+      use: {
+        ...devices["iPhone 14"],
+        // Playwright's "iPhone 14" device preset uses 390 × 844 — keep it but
+        // make the name explicit so CI can reference it by name.
+        viewport: { width: 390, height: 844 },
+      },
+    },
+    {
+      name: "android-lg",
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 414, height: 896 },
+        userAgent:
+          "Mozilla/5.0 (Linux; Android 13; Pixel 6 XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        hasTouch: true,
+        isMobile: true,
+        deviceScaleFactor: 3,
+      },
+    },
+
+    // ── Legacy mobile projects (kept for backward compatibility) ────────────
     { name: "ios-safari",     use: { ...devices["iPhone 14"] } },
     { name: "android-chrome", use: { ...devices["Pixel 7"] } },
-    // Slow network (3G) — chromium with throttled network
+
+    // ── Slow network (3G) — chromium with throttled network ─────────────────
     {
       name: "chromium-3g",
       use: {

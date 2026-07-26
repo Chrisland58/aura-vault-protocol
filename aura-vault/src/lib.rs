@@ -12,6 +12,12 @@ pub use errors::VaultError;
 mod test;
 #[cfg(test)]
 mod security_test;
+#[cfg(test)]
+mod proptest_strategies;
+#[cfg(test)]
+mod tvl_cap_test;
+#[cfg(test)]
+mod harvest_cooldown_test;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
@@ -20,6 +26,9 @@ use storage::{
     get_total_deposited, get_total_shares, get_version, is_paused as storage_is_paused, set_admin,
     set_balance, set_layout_version, set_paused, set_token, set_total_deposited, set_total_shares,
     set_version, CURRENT_LAYOUT_VERSION,
+    get_tvl_cap, set_tvl_cap,
+    get_last_harvest_time, set_last_harvest_time,
+    get_harvest_cooldown_secs, set_harvest_cooldown_secs,
 };
 use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
@@ -73,6 +82,18 @@ impl AuraVault {
         }
         if storage_is_paused(&env) {
             return Err(VaultError::VaultPaused);
+        }
+
+        // TVL cap check — 0 means unlimited (Issue #467)
+        let tvl_cap = get_tvl_cap(&env);
+        if tvl_cap > 0 {
+            let current_total = get_total_deposited(&env);
+            let after_deposit = current_total
+                .checked_add(amount)
+                .ok_or(VaultError::MathOverflow)?;
+            if after_deposit > tvl_cap {
+                return Err(VaultError::TvlCapExceeded);
+            }
         }
 
         let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
@@ -236,6 +257,20 @@ impl AuraVault {
             return Err(VaultError::ZeroShares);
         }
 
+        // Harvest cooldown check — Issue #471
+        // If a cooldown is configured, reject harvests that arrive too soon.
+        let cooldown_secs = get_harvest_cooldown_secs(&env);
+        if cooldown_secs > 0 {
+            let last_harvest = get_last_harvest_time(&env);
+            if last_harvest > 0 {
+                let now = env.ledger().timestamp();
+                let elapsed = now.saturating_sub(last_harvest);
+                if elapsed < cooldown_secs {
+                    return Err(VaultError::HarvestCooldown);
+                }
+            }
+        }
+
         let total_deposited = get_total_deposited(&env);
 
         let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
@@ -272,6 +307,8 @@ impl AuraVault {
         // Effects: increase total deposited with net yield; accumulate fees
         set_total_deposited(&env, new_total);
         storage::set_total_fee_collected(&env, new_fees);
+        // Record harvest timestamp for cooldown enforcement (Issue #471)
+        set_last_harvest_time(&env, env.ledger().timestamp());
 
         env.events().publish(
             (Symbol::new(&env, "harvest"), caller.clone(), yield_amount),
@@ -472,6 +509,61 @@ impl AuraVault {
     /// Read total accumulated (unwithdrawn) fees.
     pub fn total_fees_collected(env: Env) -> i128 {
         storage::get_total_fee_collected(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // TVL cap — admin-only (Issue #467)
+    // -----------------------------------------------------------------------
+
+    /// Set or update the TVL cap. `cap = 0` disables the cap (unlimited deposits).
+    pub fn set_tvl_cap(env: Env, admin: Address, cap: i128) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_tvl_cap(&env, cap);
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Read the current TVL cap (0 = unlimited).
+    pub fn get_tvl_cap(env: Env) -> i128 {
+        storage::get_tvl_cap(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // Harvest cooldown — admin-only (Issue #471)
+    // -----------------------------------------------------------------------
+
+    /// Configure the minimum seconds between harvests. `secs = 0` disables cooldown.
+    pub fn set_harvest_cooldown(env: Env, admin: Address, secs: u64) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_harvest_cooldown_secs(&env, secs);
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Admin override: reset the last-harvest timestamp, bypassing the cooldown.
+    /// Useful for emergency re-harvest after a failed yield event.
+    pub fn reset_harvest_cooldown(env: Env, admin: Address) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_last_harvest_time(&env, 0);
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Read the timestamp of the last successful harvest.
+    pub fn last_harvest_time(env: Env) -> u64 {
+        get_last_harvest_time(&env)
     }
 
     // -----------------------------------------------------------------------

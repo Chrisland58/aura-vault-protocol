@@ -110,6 +110,9 @@ stellar contract invoke \
 | 10 | `StorageLayoutMismatch` | On-chain layout version mismatch on upgrade |
 | 11 | `VaultPaused` | Mutating operation called while vault is paused |
 | 12 | `BalanceMismatch` | Actual token balance differs from tracked state (flash loan guard) |
+| 13 | `TimelockNotExpired` | Governance proposal execution attempted before timelock has elapsed |
+| 14 | `NotApproved` | Governance proposal has not reached required signature threshold |
+| 15 | `AlreadyVoted` | Signer has already cast a vote on this proposal |
 
 ## License
 
