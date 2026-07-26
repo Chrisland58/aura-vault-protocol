@@ -14,6 +14,12 @@ export { LanguageSwitcher } from "./LanguageSwitcher";
 export { Skeleton } from "./Skeleton";
 export { ThemeProvider, useTheme } from "./ThemeProvider";
 export {
+  CriticalMessageProvider,
+  useCriticalMessage,
+  type CriticalMessage,
+  type CriticalMessageType,
+} from "./CriticalMessageAck";
+export {
   NotificationProvider,
   NotificationCenter,
   useNotifications,
