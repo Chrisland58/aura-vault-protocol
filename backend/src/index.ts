@@ -1,5 +1,5 @@
-import cors from "cors";
 import express from "express";
+import cors from "cors";
 import { authenticate } from "./middleware/authMiddleware.js";
 import {
   authRateLimiter,
@@ -38,33 +38,53 @@ app.use(express.json());
 app.use(loggingMiddleware());
 app.use(globalIpRateLimiter(["/api/health"]));
 
-app.post("/api/auth/login", authRateLimiter(), async (req, res) => {
-  const { walletAddress, deviceId, tier } = req.body;
-  if (!walletAddress) {
-    res.status(400).json({ error: "walletAddress required" });
-    return;
+// ── A05 Security Misconfiguration: security headers (Helmet) ─────────────────
+applySecurityHeaders(app);
+
+// ── A05 Security Misconfiguration: strict CORS ───────────────────────────────
+// Replace the open cors() with allowlist-driven corsOptions
+app.use(cors(corsOptions));
+
+// ── A09 Logging Failures: correlation IDs + structured request logging ────────
+app.use(correlationIdMiddleware());
+app.use(createRequestLogger());
+
+app.use(express.json({ limit: "1mb" }));
+app.use(globalIpRateLimiter(["/api/health"]));
+
+// ── A03 Injection / A07 Auth Failures: validate login input with Zod ─────────
+app.post(
+  "/api/auth/login",
+  authRateLimiter(),
+  validate(loginSchema),
+  async (req, res) => {
+    const { walletAddress, deviceId, tier } = req.body as {
+      walletAddress: string;
+      deviceId?: string;
+      tier: Tier;
+    };
+
+    const tokens = await generateTokens(walletAddress, deviceId, tier);
+    res.json(tokens);
   }
+);
 
-  const validTier: Tier = tier === "paid" ? "paid" : "free";
-  const tokens = await generateTokens(walletAddress, deviceId, validTier);
-  res.json(tokens);
-});
+app.post(
+  "/api/auth/refresh",
+  authRateLimiter(),
+  validate(refreshSchema),
+  async (req, res) => {
+    const { refreshToken } = req.body as { refreshToken: string };
 
-app.post("/api/auth/refresh", authRateLimiter(), async (req, res) => {
-  const { refreshToken } = req.body;
-  if (!refreshToken) {
-    res.status(400).json({ error: "refreshToken required" });
-    return;
+    const tokens = await refreshAccessToken(refreshToken);
+    if (!tokens) {
+      res.status(401).json({ error: "Invalid or expired refresh token" });
+      return;
+    }
+
+    res.json(tokens);
   }
-
-  const tokens = await refreshAccessToken(refreshToken);
-  if (!tokens) {
-    res.status(401).json({ error: "Invalid or expired refresh token" });
-    return;
-  }
-
-  res.json(tokens);
-});
+);
 
 app.post("/api/auth/logout", authenticate, userRateLimiter(), async (req, res) => {
   const token = req.headers.authorization?.slice(7);
@@ -88,6 +108,7 @@ app.post("/api/auth/revoke-all", authenticate, userRateLimiter(), async (req, re
   res.json({ success: true });
 });
 
+// ── A01 Broken Access Control: all protected routes use `authenticate` ────────
 app.use("/api/webhooks", authenticate, webhookRouter);
 app.use("/api/email", emailRouter);
 app.use("/api/v1/user/portfolio", authenticate, portfolioRouter);
