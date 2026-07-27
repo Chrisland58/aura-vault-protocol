@@ -249,14 +249,14 @@ jobs:
       SECRET_SCAN_RESULT: ${{ needs.secret-scanning.result }}
     steps:
       - name: Download npm-audit artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: npm-audit-*
           merge-multiple: true
         continue-on-error: true
 
       - name: Download cargo-audit artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: cargo-audit-results
         continue-on-error: true
