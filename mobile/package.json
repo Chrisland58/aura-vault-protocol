@@ -29,6 +29,6 @@
     "@types/react": "~18.3.0",
     "typescript": "~7.0.2",
     "jest": "~30.4.2",
-    "@testing-library/react-native": "~12.4.0"
+    "@testing-library/react-native": "~14.0.1"
   }
 }
