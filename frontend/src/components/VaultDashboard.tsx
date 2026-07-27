@@ -234,12 +234,24 @@ export default function VaultDashboard() {
             value={fmtNumber(stats!.userBalance)}
             sub="Underlying tokens"
           />
-          <StatCard
+          <div
             data-cy="stat-shares"
-            label="Your Shares"
-            value={fmtNumber(stats!.userShares)}
-            sub={`@ ${stats!.pricePerShare} / share`}
-          />
+            className="flex flex-col gap-1 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">Your Shares</span>
+            <AnimatedShareBalance
+              value={fmtNumber(stats!.userShares)}
+              className="font-mono text-2xl font-semibold text-zinc-900 dark:text-zinc-50"
+            />
+            <span className="text-xs text-zinc-400">
+              <AnimatedShareBalance
+                value={stats!.pricePerShare}
+                className="font-mono"
+                priceMode
+              />
+              {" / share"}
+            </span>
+          </div>
         </div>
       )}
 
