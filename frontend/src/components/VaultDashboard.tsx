@@ -233,9 +233,18 @@ export default function VaultDashboard() {
             label="Your Shares"
             value={fmtNumber(stats!.userShares)}
             sub={
-              stats!.userShares !== "—" && stats!.pricePerShare !== "—"
-                ? `≈ ${(parseFloat(stats!.userShares) * parseFloat(stats!.pricePerShare || "0")).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDC`
-                : `@ ${stats!.pricePerShare} / share`
+              stats!.userShares !== "—" && stats!.pricePerShare !== "—" ? (
+                <ShareBalanceDisplay
+                  shares={stats!.userShares}
+                  sharePrice={stats!.pricePerShare}
+                  sharePriceUpdatedAt={stats!.sharePriceUpdatedAt}
+                  tokenSymbol="USDC"
+                  shareSymbol="aUSDC"
+                  variant="compact"
+                />
+              ) : (
+                `@ ${stats!.pricePerShare} / share`
+              )
             }
           />
         </div>
