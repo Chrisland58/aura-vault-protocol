@@ -3,6 +3,7 @@ import { Toast } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { OnboardingFlow, hasCompletedOnboarding } from "./components/OnboardingFlow";
 import { Skeleton } from "./components/Skeleton";
+import { VaultStats } from "./components/VaultStats";
 import type { ToastMessage } from "./components/Toast";
 
 const DepositForm = lazy(() => import("./components/DepositForm").then((m) => ({ default: m.DepositForm })));
@@ -63,6 +64,8 @@ export default function App() {
               ))}
             </div>
           </nav>
+
+          <VaultStats />
 
           <div
             id={`panel-${tab}`}
