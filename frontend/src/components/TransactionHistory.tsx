@@ -373,8 +373,8 @@ export default function TransactionHistory({
           <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
             {pageRows.length === 0 ? (
               <tr>
-                <td colSpan={compact ? 4 : 5} className="py-10 text-center text-sm text-zinc-400">
-                  No transactions found.
+                <td colSpan={compact ? 4 : 5}>
+                  <EmptyState variant="no-transactions" className="py-4" />
                 </td>
               </tr>
             ) : (

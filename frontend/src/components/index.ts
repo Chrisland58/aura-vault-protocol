@@ -1,5 +1,9 @@
 // Default exports
 export { default as WalletConnect } from "./WalletConnect";
+
+// Empty states
+export { EmptyState } from "./EmptyState";
+export type { EmptyStateProps, EmptyVariant } from "./EmptyState";
 export { OnboardingChecklist, useOnboarding } from "./OnboardingChecklist";
 export type { ChecklistItemId } from "./OnboardingChecklist";
 export { default as TransactionModal } from "./TransactionModal";
