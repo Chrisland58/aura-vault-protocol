@@ -1,0 +1,189 @@
+name: Gas Regression Check
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "aura-vault/src/**"
+      - "aura-vault/Cargo.toml"
+      - "aura-vault/Cargo.lock"
+      - "gas-baselines.json"
+  pull_request:
+    branches: ["**"]
+    paths:
+      - "aura-vault/src/**"
+      - "aura-vault/Cargo.toml"
+      - "aura-vault/Cargo.lock"
+      - "gas-baselines.json"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gas-check:
+    name: Gas Regression Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - uses: actions/checkout@v4
+
+      # ── Rust toolchain ──────────────────────────────────────────────────────
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # ── Cargo cache ─────────────────────────────────────────────────────────
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            aura-vault/target
+          key: ${{ runner.os }}-cargo-gas-${{ hashFiles('aura-vault/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-gas-
+            ${{ runner.os }}-cargo-
+
+      # ── Run gas measurement tests ────────────────────────────────────────────
+      - name: Run gas measurement tests
+        id: gas_tests
+        working-directory: aura-vault
+        run: |
+          cargo test gas_ -- --nocapture 2>&1 | tee ../gas-test-output.txt
+
+      # ── Compare against baselines ────────────────────────────────────────────
+      - name: Compare gas against baselines
+        id: gas_compare
+        run: |
+          chmod +x scripts/check-gas.sh
+          set +e
+          ./scripts/check-gas.sh 2>&1 | tee gas-check-output.txt
+          GAS_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=${GAS_EXIT}" >> "$GITHUB_OUTPUT"
+          exit $GAS_EXIT
+
+      # ── Always upload artefacts ───────────────────────────────────────────────
+      - name: Upload gas report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gas-report
+          path: |
+            gas-report.json
+            gas-test-output.txt
+            gas-check-output.txt
+
+      # ── Build markdown comment ────────────────────────────────────────────────
+      - name: Build PR comment
+        if: always() && github.event_name == 'pull_request'
+        id: comment
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys
+
+          try:
+              with open('gas-report.json') as f:
+                  report = json.load(f)
+          except FileNotFoundError:
+              print("gas-report.json not found; skipping comment.")
+              sys.exit(0)
+
+          threshold = report.get('threshold_percent', 10)
+          total_pass = report.get('pass', 0)
+          total_fail = report.get('fail', 0)
+          total_skip = report.get('skip', 0)
+
+          if total_fail > 0:
+              header = f"## ⛽ Gas Report — ❌ {total_fail} regression(s) detected"
+          else:
+              header = f"## ⛽ Gas Report — ✅ All functions within threshold"
+
+          lines = [
+              header,
+              "",
+              f"> Threshold: **{threshold}%** | ✅ {total_pass} passed · ❌ {total_fail} failed · ⏭ {total_skip} skipped",
+              "",
+              "| Function | Baseline (instrs) | Current (instrs) | Δ% | Status |",
+              "|---|---|---|---|---|",
+          ]
+
+          for r in sorted(report.get('results', []), key=lambda x: x['function']):
+              fn = r['function']
+              baseline = r.get('baseline', '—')
+              current  = r.get('current', '—')
+              delta    = r.get('delta_percent')
+              status   = r.get('status', 'skip')
+
+              if status == 'skip':
+                  delta_str  = '—'
+                  status_str = '⏭ skip'
+              elif status == 'fail':
+                  delta_str  = f"+{delta:.1f}%" if delta is not None else '—'
+                  status_str = '❌ FAIL'
+              else:
+                  if delta is not None and delta > 0:
+                      delta_str  = f"+{delta:.1f}%"
+                      status_str = '⚠️ pass↑'
+                  elif delta is not None and delta < 0:
+                      delta_str  = f"{delta:.1f}%"
+                      status_str = '✅ improved'
+                  else:
+                      delta_str  = '0%'
+                      status_str = '✅ pass'
+
+              lines.append(f"| `{fn}` | {baseline:,} | {current:,} | {delta_str} | {status_str} |")
+
+          lines += [
+              "",
+              "<details>",
+              "<summary>How to update baselines</summary>",
+              "",
+              "If this regression is intentional (e.g. a new feature):",
+              "",
+              "```bash",
+              "./scripts/update-gas-baselines.sh",
+              "git add gas-baselines.json",
+              'git commit -m "chore: update gas baselines"',
+              "```",
+              "",
+              "</details>",
+          ]
+
+          comment_body = "\n".join(lines)
+
+          # Write to GITHUB_OUTPUT (multi-line value via delimiter)
+          delimiter = "EOF_GAS_COMMENT"
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"comment_body<<{delimiter}\n")
+              f.write(comment_body + "\n")
+              f.write(f"{delimiter}\n")
+
+          print("PR comment body written to GITHUB_OUTPUT.")
+          PYEOF
+
+      # ── Post / update PR comment ─────────────────────────────────────────────
+      - name: Post gas report comment on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: gas-report
+          message: ${{ steps.comment.outputs.comment_body }}
+
+      # ── Fail the job if gas check failed ────────────────────────────────────
+      - name: Enforce gas threshold
+        if: always()
+        run: |
+          EXIT="${{ steps.gas_compare.outputs.exit_code }}"
+          if [[ "$EXIT" != "0" ]]; then
+            echo "::error::Gas regression threshold exceeded. See the gas report artifact or PR comment for details."
+            exit 1
+          fi

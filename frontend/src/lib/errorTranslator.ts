@@ -13,6 +13,205 @@ export type ErrorCode =
   | "INVALID_TOKEN"
   | "UNKNOWN";
 
+// ---------------------------------------------------------------------------
+// Contextual error recovery types
+// ---------------------------------------------------------------------------
+
+export type RecoveryAction = {
+  label: string;
+  action: "retry" | "reduce_amount" | "start_over" | "external";
+  href?: string;
+};
+
+export type VaultErrorContext = {
+  title: string;
+  message: string;
+  /** lucide-react icon component name */
+  icon: string;
+  severity: "error" | "warning" | "info";
+  actions: RecoveryAction[];
+};
+
+export interface ErrorRecoveryContext {
+  enteredAmount?: string;
+  walletBalance?: string;
+  tokenSymbol?: string;
+}
+
+/**
+ * Classify an unknown error thrown during vault transactions and return
+ * structured, user-friendly recovery guidance.
+ */
+export function getErrorRecovery(
+  error: unknown,
+  context?: ErrorRecoveryContext
+): VaultErrorContext {
+  const msg = extractMessage(error).toLowerCase();
+  const symbol = context?.tokenSymbol ?? "tokens";
+
+  // -----------------------------------------------------------------------
+  // 1. Insufficient balance
+  // -----------------------------------------------------------------------
+  if (
+    isInsufficientBalance(error, msg)
+  ) {
+    const walletBal = context?.walletBalance ?? "unknown";
+    const entered = context?.enteredAmount ?? "the entered amount";
+    return {
+      title: "Insufficient Balance",
+      message: `Your wallet has ${walletBal} ${symbol} but you entered ${entered}. Reduce amount or top up wallet.`,
+      icon: "Wallet",
+      severity: "warning",
+      actions: [
+        { label: "Reduce Amount", action: "reduce_amount" },
+      ],
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // 2. Vault paused (error code 11 / VaultPaused)
+  // -----------------------------------------------------------------------
+  if (isVaultPaused(error, msg)) {
+    return {
+      title: "Vault Is Paused",
+      message: "The vault is paused. Check back later or follow @AuraVault for updates.",
+      icon: "PauseCircle",
+      severity: "warning",
+      actions: [
+        {
+          label: "Follow @AuraVault",
+          action: "external",
+          href: "https://twitter.com/AuraVault",
+        },
+      ],
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // 3. Wrong network / network mismatch
+  // -----------------------------------------------------------------------
+  if (isWrongNetwork(msg)) {
+    return {
+      title: "Wrong Network",
+      message: "Your wallet is connected to the wrong network. Switch to the correct network in Freighter and try again.",
+      icon: "Globe",
+      severity: "warning",
+      actions: [
+        {
+          label: "Open Freighter",
+          action: "external",
+          href: "https://www.freighter.app/",
+        },
+      ],
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // 4. Network / connection error
+  // -----------------------------------------------------------------------
+  if (isNetworkError(error, msg)) {
+    return {
+      title: "Connection Issue",
+      message: "Connection issue. Check your internet connection and try again.",
+      icon: "WifiOff",
+      severity: "error",
+      actions: [
+        { label: "Try Again", action: "retry" },
+      ],
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // 5. Generic fallback
+  // -----------------------------------------------------------------------
+  const rawMessage = extractMessage(error) || "Transaction failed";
+  return {
+    title: "Transaction Failed",
+    message: rawMessage,
+    icon: "XCircle",
+    severity: "error",
+    actions: [
+      { label: "Try Again", action: "retry" },
+      { label: "Start Over", action: "start_over" },
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function extractMessage(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof (error as Record<string, unknown>).message === "string"
+  ) {
+    return (error as Record<string, unknown>).message as string;
+  }
+  return "";
+}
+
+function isInsufficientBalance(error: unknown, lowerMsg: string): boolean {
+  if (
+    lowerMsg.includes("insufficient balance") ||
+    lowerMsg.includes("insufficient funds") ||
+    lowerMsg.includes("insufficientbalance") ||
+    lowerMsg.includes("not enough balance")
+  ) {
+    return true;
+  }
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as Record<string, unknown>).code === "INSUFFICIENT_BALANCE"
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isVaultPaused(error: unknown, lowerMsg: string): boolean {
+  if (
+    lowerMsg.includes("vaultpaused") ||
+    lowerMsg.includes("vault paused") ||
+    lowerMsg.includes("paused")
+  ) {
+    return true;
+  }
+  // Soroban contract error code 11
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as Record<string, unknown>).code === 11
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isWrongNetwork(lowerMsg: string): boolean {
+  return (
+    lowerMsg.includes("wrong network") ||
+    lowerMsg.includes("network mismatch")
+  );
+}
+
+function isNetworkError(error: unknown, lowerMsg: string): boolean {
+  if (error instanceof TypeError && lowerMsg.includes("fetch")) {
+    return true;
+  }
+  if (lowerMsg.includes("network") || lowerMsg.includes("connection")) {
+    return true;
+  }
+  return false;
+}
+
 const errorMessages: Record<ErrorCode, { title: string; message: string }> = {
   INVALID_WALLET_ADDRESS: {
     title: "Invalid Wallet Address",
