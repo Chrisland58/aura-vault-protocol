@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
-import { ArrowDownCircle, ArrowUpCircle, Zap } from "lucide-react";
+import React, { useState, useMemo, useCallback } from "react";
+import { ArrowDownCircle, ArrowUpCircle, Zap, CheckCircle2, Clock, XCircle } from "lucide-react";
+import { FinancialBadge, type FinancialSentiment } from "./FinancialValue";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,7 +23,7 @@ export interface TransactionHistoryProps {
   tokenSymbol?: string;
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// ── Constants (updated to use financial colour system tokens #479) ─────────
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 type PageSizeOption = (typeof PAGE_SIZE_OPTIONS)[number];
@@ -30,17 +31,39 @@ type PageSizeOption = (typeof PAGE_SIZE_OPTIONS)[number];
 type SortField = "date" | "amount" | "status";
 type SortDir = "asc" | "desc";
 
-const STATUS_BADGE: Record<Exclude<TxStatus, "all">, string> = {
-  confirmed: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
-  pending:   "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300",
-  failed:    "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+/** Map tx status → FinancialSentiment for FinancialBadge */
+const STATUS_SENTIMENT: Record<Exclude<TxStatus, "all">, FinancialSentiment> = {
+  confirmed: "positive",
+  pending:   "warning",
+  failed:    "negative",
 };
 
-// Colour classes for icon + text per type
-const TYPE_COLOR: Record<Exclude<TxType, "all">, string> = {
-  deposit:  "text-blue-600 dark:text-blue-400",
-  withdraw: "text-purple-600 dark:text-purple-400",
-  harvest:  "text-orange-500 dark:text-orange-400",
+/** Status badge label — shown alongside the icon so colour is not the sole indicator */
+const STATUS_LABEL: Record<Exclude<TxStatus, "all">, string> = {
+  confirmed: "Confirmed",
+  pending:   "Pending",
+  failed:    "Failed",
+};
+
+/** Status icon for the badge */
+const STATUS_ICON: Record<Exclude<TxStatus, "all">, React.ReactNode> = {
+  confirmed: <CheckCircle2 className="h-3 w-3" aria-hidden="true" />,
+  pending:   <Clock        className="h-3 w-3" aria-hidden="true" />,
+  failed:    <XCircle      className="h-3 w-3" aria-hidden="true" />,
+};
+
+/** Tx type → financial colour var (used via inline style for 4.5:1 compliance) */
+const TYPE_COLOR_VAR: Record<Exclude<TxType, "all">, string> = {
+  deposit:  "var(--fin-positive)",
+  withdraw: "var(--fin-negative)",
+  harvest:  "var(--fin-warning)",
+};
+
+/** Amount colour sentiment per type */
+const AMOUNT_SENTIMENT: Record<Exclude<TxType, "all">, FinancialSentiment> = {
+  deposit:  "positive",
+  withdraw: "negative",
+  harvest:  "warning",
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -74,12 +97,13 @@ function getRelativeTime(dateString: string): string {
   return diffYear === 1 ? "1 year ago" : `${diffYear} years ago`;
 }
 
-/** Icon component for transaction type. */
+/** Icon component for transaction type — coloured via financial system tokens. */
 function TypeIcon({ type }: { type: Exclude<TxType, "all"> }) {
-  const cls = `h-4 w-4 shrink-0 ${TYPE_COLOR[type]}`;
-  if (type === "deposit")  return <ArrowDownCircle className={cls} aria-hidden="true" />;
-  if (type === "withdraw") return <ArrowUpCircle   className={cls} aria-hidden="true" />;
-  return <Zap className={cls} aria-hidden="true" />;
+  const style = { color: TYPE_COLOR_VAR[type] };
+  const cls = "h-4 w-4 shrink-0";
+  if (type === "deposit")  return <ArrowDownCircle className={cls} style={style} aria-hidden="true" />;
+  if (type === "withdraw") return <ArrowUpCircle   className={cls} style={style} aria-hidden="true" />;
+  return <Zap className={cls} style={style} aria-hidden="true" />;
 }
 
 /** Format amount with sign prefix and token symbol. */
@@ -89,11 +113,9 @@ function formatAmount(type: Exclude<TxType, "all">, amount: string, symbol: stri
   return `${sign}${Math.abs(num).toFixed(2)} ${symbol}`;
 }
 
-/** Amount colour: green for positive (deposit/harvest), red for negative (withdraw). */
-function amountColor(type: Exclude<TxType, "all">): string {
-  return type === "withdraw"
-    ? "text-red-500 dark:text-red-400"
-    : "text-emerald-600 dark:text-emerald-400";
+/** Amount colour uses financial system variable so it adapts to light/dark. */
+function amountColorStyle(type: Exclude<TxType, "all">): React.CSSProperties {
+  return { color: TYPE_COLOR_VAR[type] };
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -371,22 +393,26 @@ export default function TransactionHistory({
 
                   {/* Type — icon + colour-coded text, no badge pill */}
                   <td className={`px-4 ${cellPy}`} style={{ minWidth: "120px" }}>
-                    <span className={`inline-flex items-center gap-1.5 text-sm font-medium capitalize ${TYPE_COLOR[tx.type]}`}>
+                    <span className="inline-flex items-center gap-1.5 text-sm font-medium capitalize"
+                          style={{ color: TYPE_COLOR_VAR[tx.type] }}>
                       <TypeIcon type={tx.type} />
                       {tx.type}
                     </span>
                   </td>
 
                   {/* Amount — signed, with token symbol, right-aligned, monospace */}
-                  <td className={`whitespace-nowrap px-4 ${cellPy} text-right font-mono text-sm font-medium ${amountColor(tx.type)}`}>
+                  <td className={`whitespace-nowrap px-4 ${cellPy} text-right font-mono text-sm font-medium`}
+                      style={amountColorStyle(tx.type)}>
                     {formatAmount(tx.type, tx.amount, tokenSymbol)}
                   </td>
 
-                  {/* Status */}
+                  {/* Status — FinancialBadge satisfies WCAG 1.4.1 (icon+label, not just colour) */}
                   <td className={`px-4 ${cellPy}`}>
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${STATUS_BADGE[tx.status]}`}>
-                      {tx.status}
-                    </span>
+                    <FinancialBadge
+                      label={STATUS_LABEL[tx.status]}
+                      sentiment={STATUS_SENTIMENT[tx.status]}
+                      icon={STATUS_ICON[tx.status]}
+                    />
                   </td>
 
                   {/* Hash — hidden in compact mode */}
