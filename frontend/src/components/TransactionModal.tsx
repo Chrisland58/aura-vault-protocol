@@ -1,13 +1,47 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { AlertCircle, CheckCircle, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle, XCircle, ChevronDown, ChevronUp, Info, Check } from "lucide-react";
 import { useHapticsStandalone } from "@/components/HapticFeedback";
 
 type TxType = "deposit" | "withdraw";
 /** 1 = Amount, 2 = Review/Sign, 3 = Submit, 4 = Confirmed */
 type Step = 1 | 2 | 3 | 4;
 type TxStatus = "idle" | "pending" | "success" | "error";
+
+type GasPriority = "low" | "medium" | "high";
+
+interface AdvancedSettings {
+  slippageTolerance: number; // percentage, e.g. 0.5
+  gasPriority: GasPriority;
+}
+
+const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
+  slippageTolerance: 0.5,
+  gasPriority: "medium",
+};
+
+const SESSION_KEY = "aura_advanced_settings";
+
+function loadAdvancedSettings(): AdvancedSettings {
+  if (typeof sessionStorage === "undefined") return DEFAULT_ADVANCED_SETTINGS;
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return DEFAULT_ADVANCED_SETTINGS;
+    return { ...DEFAULT_ADVANCED_SETTINGS, ...JSON.parse(raw) };
+  } catch {
+    return DEFAULT_ADVANCED_SETTINGS;
+  }
+}
+
+function saveAdvancedSettings(s: AdvancedSettings): void {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(s));
+  } catch {
+    // storage full or unavailable — silently ignore
+  }
+}
 
 interface Props {
   type: TxType;
@@ -221,6 +255,164 @@ function isFutureStep(_step: Step) {
   return false;
 }
 
+// ─── AdvancedSettingsPanel component ─────────────────────────────────────────
+
+interface TooltipProps {
+  text: string;
+}
+
+function Tooltip({ text }: TooltipProps) {
+  return (
+    <span className="group relative inline-flex items-center">
+      <Info
+        size={14}
+        className="ml-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 cursor-help"
+        aria-label={`Info: ${text}`}
+      />
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 rounded-lg bg-zinc-900 dark:bg-zinc-100 px-3 py-2 text-xs text-zinc-100 dark:text-zinc-900 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 shadow-lg"
+      >
+        {text}
+      </span>
+    </span>
+  );
+}
+
+interface AdvancedSettingsPanelProps {
+  settings: AdvancedSettings;
+  onChange: (updated: AdvancedSettings) => void;
+}
+
+function AdvancedSettingsPanel({ settings, onChange }: AdvancedSettingsPanelProps) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div
+      className="rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-hidden"
+      data-cy="advanced-settings"
+    >
+      {/* Toggle header */}
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls="advanced-settings-content"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors"
+        data-cy="advanced-settings-toggle"
+      >
+        <span className="flex items-center gap-1.5">
+          Advanced Settings
+          <Tooltip text="Optional settings for power users. Defaults are safe for most transactions." />
+        </span>
+        {open ? (
+          <ChevronUp size={16} aria-hidden="true" className="text-zinc-400" />
+        ) : (
+          <ChevronDown size={16} aria-hidden="true" className="text-zinc-400" />
+        )}
+      </button>
+
+      {/* Collapsible content */}
+      <div
+        id="advanced-settings-content"
+        role="region"
+        aria-label="Advanced Settings"
+        className={[
+          "overflow-hidden transition-all duration-300 ease-in-out",
+          open ? "max-h-72 opacity-100" : "max-h-0 opacity-0",
+        ].join(" ")}
+      >
+        <div className="flex flex-col gap-5 px-4 pb-4 pt-3 bg-zinc-50 dark:bg-zinc-800/30 border-t border-zinc-200 dark:border-zinc-700">
+
+          {/* Slippage Tolerance */}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <label
+                htmlFor="slippage-slider"
+                className="text-xs font-medium text-zinc-600 dark:text-zinc-400 flex items-center"
+              >
+                Slippage Tolerance
+                <Tooltip text="Maximum price movement you're willing to accept. Higher values reduce failed txs but may result in worse prices. Recommended: 0.1%–1.0%." />
+              </label>
+              <span
+                className="font-mono text-xs font-semibold text-zinc-800 dark:text-zinc-200 min-w-[3.5rem] text-right"
+                aria-live="polite"
+              >
+                {settings.slippageTolerance.toFixed(1)}%
+              </span>
+            </div>
+            <input
+              id="slippage-slider"
+              type="range"
+              min={0.1}
+              max={5}
+              step={0.1}
+              value={settings.slippageTolerance}
+              onChange={(e) => {
+                const updated = { ...settings, slippageTolerance: parseFloat(e.target.value) };
+                onChange(updated);
+                saveAdvancedSettings(updated);
+              }}
+              aria-label={`Slippage tolerance: ${settings.slippageTolerance.toFixed(1)}%`}
+              aria-valuemin={0.1}
+              aria-valuemax={5}
+              aria-valuenow={settings.slippageTolerance}
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-zinc-200 dark:bg-zinc-700 accent-zinc-900 dark:accent-zinc-100"
+              data-cy="slippage-slider"
+            />
+            <div className="flex justify-between text-[10px] text-zinc-400">
+              <span>0.1%</span>
+              <span>2.5%</span>
+              <span>5.0%</span>
+            </div>
+            {settings.slippageTolerance > 2 && (
+              <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1" role="alert">
+                <AlertCircle size={12} />
+                High slippage — transaction may be front-run
+              </p>
+            )}
+          </div>
+
+          {/* Gas Priority */}
+          <div className="flex flex-col gap-2">
+            <label
+              htmlFor="gas-priority"
+              className="text-xs font-medium text-zinc-600 dark:text-zinc-400 flex items-center"
+            >
+              Gas Priority
+              <Tooltip text="Higher priority increases network fees but confirms faster. 'Medium' is suitable for most transactions." />
+            </label>
+            <div className="flex gap-2" role="group" aria-label="Gas priority options">
+              {(["low", "medium", "high"] as GasPriority[]).map((level) => (
+                <button
+                  key={level}
+                  type="button"
+                  onClick={() => {
+                    const updated = { ...settings, gasPriority: level };
+                    onChange(updated);
+                    saveAdvancedSettings(updated);
+                  }}
+                  aria-pressed={settings.gasPriority === level}
+                  className={[
+                    "flex-1 rounded-lg py-1.5 text-xs font-semibold capitalize transition-colors border",
+                    settings.gasPriority === level
+                      ? "bg-zinc-900 text-white border-zinc-900 dark:bg-zinc-100 dark:text-black dark:border-zinc-100"
+                      : "border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-700",
+                  ].join(" ")}
+                  data-cy={`gas-priority-${level}`}
+                >
+                  {level}
+                </button>
+              ))}
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function TransactionModal({ type, balance, onClose }: Props) {
@@ -233,6 +425,9 @@ export default function TransactionModal({ type, balance, onClose }: Props) {
   const [gasEstimate, setGasEstimate] = useState<GasEstimate | null>(null);
   const [gasLoading, setGasLoading] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(
+    () => loadAdvancedSettings()
+  );
   const inputRef = useRef<HTMLInputElement>(null);
   const { vibrate } = useHapticsStandalone();
 
@@ -501,6 +696,12 @@ export default function TransactionModal({ type, balance, onClose }: Props) {
                 Insufficient balance for gas fees
               </p>
             )}
+
+            {/* Advanced Settings */}
+            <AdvancedSettingsPanel
+              settings={advancedSettings}
+              onChange={setAdvancedSettings}
+            />
 
             <div className="flex gap-3">
               <button
