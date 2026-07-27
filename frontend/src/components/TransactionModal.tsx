@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { AlertCircle, Check, CheckCircle, ChevronDown, ChevronUp, Info, XCircle } from "lucide-react";
+import { AlertCircle, Check, CheckCircle, XCircle } from "lucide-react";
+import TransactionConfirmation from "@/components/TransactionConfirmation";
 import { useHapticsStandalone } from "@/components/HapticFeedback";
 import { ShareBalanceDisplay } from "@/components/ShareBalanceDisplay";
 import {
@@ -11,7 +12,7 @@ import {
   type AdvancedSettingsState,
 } from "@/lib/transactionAdvancedSettings";
 
-type TxType = "deposit" | "withdraw";
+type TxType = "deposit" | "withdraw" | "harvest";
 /** 1 = Amount, 2 = Review/Sign, 3 = Submit, 4 = Confirmed */
 type Step = 1 | 2 | 3 | 4;
 type TxStatus = "idle" | "pending" | "success" | "error";
@@ -19,6 +20,8 @@ type TxStatus = "idle" | "pending" | "success" | "error";
 interface Props {
   type: TxType;
   balance: string;
+  /** Current share price used to estimate shares / tokens in the review step. Defaults to "1.0". */
+  sharePrice?: string;
   onClose: () => void;
   /** Current share price in underlying token units — used in withdraw review */
   sharePrice?: string;
@@ -47,6 +50,7 @@ const STEP_DEFS: StepDef[] = [
     descriptions: {
       deposit: "Enter the amount you want to deposit into the vault.",
       withdraw: "Enter the number of shares you want to redeem.",
+      harvest: "Enter the yield amount you want to inject into the vault.",
     },
   },
   {
@@ -55,6 +59,7 @@ const STEP_DEFS: StepDef[] = [
     descriptions: {
       deposit: "Review gas estimates and confirm the deposit details.",
       withdraw: "Review the redemption details and estimated output.",
+      harvest: "Review the yield injection details before confirming.",
     },
   },
   {
@@ -63,6 +68,7 @@ const STEP_DEFS: StepDef[] = [
     descriptions: {
       deposit: "Submitting your deposit to the Stellar network…",
       withdraw: "Broadcasting your withdrawal transaction…",
+      harvest: "Broadcasting your harvest transaction…",
     },
   },
   {
@@ -71,6 +77,7 @@ const STEP_DEFS: StepDef[] = [
     descriptions: {
       deposit: "Your deposit was successful. Shares have been minted.",
       withdraw: "Withdrawal complete. Underlying tokens have been sent.",
+      harvest: "Harvest complete. Yield has been injected into the vault.",
     },
   },
 ];
@@ -365,7 +372,7 @@ function AdvancedSettingsPanel({ settings, isOpen, onToggle, onChange }: Advance
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function TransactionModal({ type, balance, onClose, sharePrice, sharePriceUpdatedAt }: Props) {
+export default function TransactionModal({ type, balance, sharePrice = "1.0", onClose }: Props) {
   const [step, setStep] = useState<Step>(1);
   const [amount, setAmount] = useState("");
   const [amountError, setAmountError] = useState("");
@@ -486,10 +493,23 @@ export default function TransactionModal({ type, balance, onClose, sharePrice, s
     void handleSubmit(true);
   }
 
-  const label = type === "deposit" ? "Deposit" : "Withdraw";
+  const labelMap: Record<TxType, string> = { deposit: "Deposit", withdraw: "Withdraw", harvest: "Harvest" };
+  const label = labelMap[type];
   const balanceNum = parseFloat(balance);
   const amountNum = parseFloat(amount) || 0;
+  const sharePriceNum = parseFloat(sharePrice) || 1;
   const totalWithGas = amountNum + parseFloat(gasEstimate?.totalGas ?? "0");
+
+  // Estimated shares for deposit: amount / sharePrice
+  const estimatedShares =
+    sharePriceNum > 0
+      ? Math.floor(amountNum / sharePriceNum).toString()
+      : "0";
+  // Estimated tokens for withdraw: shares * sharePrice (treat amount as shares for withdraw)
+  const estimatedTokens =
+    type === "withdraw"
+      ? (amountNum * sharePriceNum).toFixed(4)
+      : "0";
 
   return (
     <div
@@ -585,77 +605,15 @@ export default function TransactionModal({ type, balance, onClose, sharePrice, s
         {/* ── Step 2: Review / Sign ────────────────────────────────────── */}
         {step === 2 && (
           <div data-cy="modal-step-2" className="flex flex-col gap-4">
-            <dl className="flex flex-col gap-3 rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800">
-              <div className="flex justify-between text-sm">
-                <dt className="text-zinc-500">
-                  {type === "withdraw" ? "Shares to Redeem" : "Amount"}
-                </dt>
-                <dd
-                  data-cy="modal-review-amount"
-                  className="font-mono font-semibold text-right"
-                >
-                  {type === "withdraw" && sharePrice ? (
-                    <ShareBalanceDisplay
-                      shares={amount}
-                      sharePrice={sharePrice}
-                      sharePriceUpdatedAt={sharePriceUpdatedAt}
-                      variant="compact"
-                    />
-                  ) : (
-                    amount
-                  )}
-                </dd>
-              </div>
-
-              {gasLoading ? (
-                <div className="flex justify-between text-sm">
-                  <dt className="text-zinc-500">Est. Gas</dt>
-                  <dd className="flex items-center gap-1">
-                    <Spinner />
-                    <span className="text-xs text-zinc-500">Estimating…</span>
-                  </dd>
-                </div>
-              ) : (
-                <>
-                  <div className="flex justify-between text-sm">
-                    <dt className="text-zinc-500">Base Fee</dt>
-                    <dd data-cy="modal-base-fee" className="font-mono">
-                      {gasEstimate?.baseFee ?? "0.001"} XLM
-                    </dd>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <dt className="text-zinc-500">Priority Fee</dt>
-                    <dd data-cy="modal-priority-fee" className="font-mono">
-                      {gasEstimate?.priorityFee ?? "0.0005"} XLM
-                    </dd>
-                  </div>
-                  <div className="border-t border-zinc-200 dark:border-zinc-700 pt-3 mt-2 flex justify-between text-sm font-semibold">
-                    <dt className="text-zinc-600 dark:text-zinc-300">
-                      Total Gas
-                    </dt>
-                    <dd data-cy="modal-gas-estimate" className="font-mono">
-                      {gasEstimate?.totalGas ?? "0.0015"} XLM
-                    </dd>
-                  </div>
-                </>
-              )}
-
-              <div className="border-t border-zinc-200 dark:border-zinc-700 pt-3 mt-2 flex justify-between text-base font-bold">
-                <dt className="text-zinc-900 dark:text-zinc-100">
-                  Total (with gas)
-                </dt>
-                <dd
-                  data-cy="modal-total"
-                  className={`font-mono ${
-                    totalWithGas > balanceNum
-                      ? "text-red-600 dark:text-red-400"
-                      : "text-green-600 dark:text-green-400"
-                  }`}
-                >
-                  {totalWithGas.toFixed(4)}
-                </dd>
-              </div>
-            </dl>
+            <TransactionConfirmation
+              type={type}
+              amount={amount}
+              estimatedShares={estimatedShares}
+              estimatedTokens={estimatedTokens}
+              sharePrice={sharePrice}
+              onConfirm={() => void handleNext()}
+              onBack={() => setStep(1)}
+            />
 
             {totalWithGas > balanceNum && (
               <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
@@ -663,33 +621,6 @@ export default function TransactionModal({ type, balance, onClose, sharePrice, s
                 Insufficient balance for gas fees
               </p>
             )}
-
-            <AdvancedSettingsPanel
-              settings={advancedSettings}
-              isOpen={advancedSettings.isOpen}
-              onToggle={() =>
-                setAdvancedSettings((prev) => ({ ...prev, isOpen: !prev.isOpen }))
-              }
-              onChange={setAdvancedSettings}
-            />
-
-            <div className="flex gap-3">
-              <button
-                data-cy="modal-back-btn"
-                onClick={() => setStep(1)}
-                className="flex-1 rounded-lg border border-zinc-300 px-4 py-2.5 font-semibold hover:bg-zinc-50 dark:border-zinc-600 dark:hover:bg-zinc-800"
-              >
-                Back
-              </button>
-              <button
-                data-cy="modal-next-btn"
-                onClick={() => void handleNext()}
-                disabled={totalWithGas > balanceNum || gasLoading}
-                className="flex-1 rounded-lg bg-zinc-900 px-4 py-2.5 font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-black disabled:dark:opacity-50"
-              >
-                Confirm &amp; Sign
-              </button>
-            </div>
           </div>
         )}
 
