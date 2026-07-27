@@ -1,20 +1,28 @@
-/// Gas (CPU instruction) measurement tests for AuraVault contract functions.
-///
-/// Each test measures the CPU instructions consumed by one contract function
-/// call using `env.budget().cpu_instruction_count()`. Results are printed to
-/// stdout so the CI script can parse them and compare against the baselines in
-/// `gas-baselines.json`.
-///
-/// Output format (one line per function):
-///   GAS_MEASUREMENT: <function_name> <cpu_instructions>
-///
-/// Run with:
-///   cargo test gas_ -- --nocapture 2>&1 | grep GAS_MEASUREMENT
+// Gas measurement harness for AuraVault contract functions.
+//
+// Each test measures CPU-instruction cost for one representative invocation of
+// every public entry-point.  Results are written as JSON to the file path given
+// by the GAS_OUTPUT environment variable (default: gas-measurements.json in the
+// repo root).
+//
+// Usage:
+//   cargo test --test-threads=1 gas_ -- --nocapture 2>/dev/null
+//
+// The JSON format emitted is:
+//   { "function": "<name>", "cpu_instructions": <u64>, "memory_bytes": <u64> }
+// One object per line (NDJSON / JSON-lines) so that the compare script can
+// stream-parse it.
+
 #![cfg(test)]
 
 extern crate std;
 
-use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+
+use soroban_sdk::testutils::Address as _;
+use soroban_sdk::{Address, Env, Vec};
 use soroban_sdk::token::StellarAssetClient;
 
 use crate::{AuraVault, AuraVaultClient};
@@ -23,16 +31,15 @@ use crate::{AuraVault, AuraVaultClient};
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn setup_vault() -> (Env, AuraVaultClient<'static>, Address, Address) {
+/// Deploy + initialise a fresh vault.
+fn setup() -> (Env, AuraVaultClient<'static>, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    env.budget().reset_unlimited();
 
     let admin = Address::generate(&env);
     let token_address = env
         .register_stellar_asset_contract_v2(admin.clone())
         .address();
-
     let vault_address = env.register_contract(None, AuraVault);
     let vault = AuraVaultClient::new(&env, &vault_address);
 
@@ -43,165 +50,230 @@ fn setup_vault() -> (Env, AuraVaultClient<'static>, Address, Address) {
     (env, vault, admin, token_address)
 }
 
-fn mint_tokens(env: &Env, token: &Address, admin: &Address, to: &Address, amount: i128) {
-    StellarAssetClient::new(env, token).mint(to, &amount);
+fn mint(env: &Env, token: &Address, admin: &Address, recipient: &Address, amount: i128) {
+    StellarAssetClient::new(env, token).mint(recipient, &amount);
 }
 
-/// Measure the CPU instructions used by `f`, resetting the budget before and
-/// after so consecutive measurements are independent.
-fn measure<F: FnOnce()>(env: &Env, f: F) -> u64 {
-    env.budget().reset_unlimited();
+/// Reset the budget, run `f`, then record cpu+memory cost.
+/// Appends one JSON line to the output file.
+fn measure<F: FnOnce()>(env: &Env, name: &str, f: F) {
+    // Reset the instruction/memory counter before the call.
+    env.cost_estimate().budget().reset_default();
+
     f();
-    let instructions = env.budget().cpu_instruction_count();
-    env.budget().reset_unlimited();
-    instructions
+
+    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem = env.cost_estimate().budget().memory_bytes_cost();
+
+    let line = std::format!(
+        r#"{{"function":"{}","cpu_instructions":{},"memory_bytes":{}}}"#,
+        name, cpu, mem
+    );
+
+    // Emit to stdout so `cargo test -- --nocapture` shows raw numbers.
+    std::println!("GAS_MEASURE: {}", line);
+
+    // Append to the output file.
+    let output_path = env::var("GAS_OUTPUT")
+        .unwrap_or_else(|_| "../gas-measurements.json".to_string());
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&output_path)
+    {
+        let _ = writeln!(file, "{}", line);
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Individual function measurements
+// Gas tests — one per public entry-point
 // ---------------------------------------------------------------------------
 
 #[test]
 fn gas_initialize() {
     let env = Env::default();
     env.mock_all_auths();
-    env.budget().reset_unlimited();
-
     let admin = Address::generate(&env);
-    let token_address = env
+    let token = env
         .register_stellar_asset_contract_v2(admin.clone())
         .address();
     let vault_address = env.register_contract(None, AuraVault);
     let vault = AuraVaultClient::new(&env, &vault_address);
     let signers: Vec<Address> = Vec::new(&env);
 
-    let instructions = measure(&env, || {
-        vault.initialize(&admin, &token_address, &signers);
+    measure(&env, "initialize", || {
+        vault.initialize(&admin, &token, &signers);
     });
-
-    std::println!("GAS_MEASUREMENT: initialize {}", instructions);
 }
 
 #[test]
 fn gas_deposit() {
-    let (env, vault, admin, token) = setup_vault();
+    let (env, vault, admin, token) = setup();
     let user = Address::generate(&env);
-    mint_tokens(&env, &token, &admin, &user, 10_000_000);
+    mint(&env, &token, &admin, &user, 1_000_000);
 
-    let instructions = measure(&env, || {
-        vault.deposit(&user, &1_000_000_i128);
+    measure(&env, "deposit", || {
+        vault.deposit(&user, &1_000_000);
     });
-
-    std::println!("GAS_MEASUREMENT: deposit {}", instructions);
 }
 
 #[test]
 fn gas_withdraw() {
-    let (env, vault, admin, token) = setup_vault();
+    let (env, vault, admin, token) = setup();
     let user = Address::generate(&env);
-    mint_tokens(&env, &token, &admin, &user, 10_000_000);
-    vault.deposit(&user, &1_000_000_i128);
+    mint(&env, &token, &admin, &user, 1_000_000);
+    vault.deposit(&user, &1_000_000);
+    let shares = vault.balance_of(&user);
 
-    let instructions = measure(&env, || {
-        vault.withdraw(&user, &500_000_i128);
+    measure(&env, "withdraw", || {
+        vault.withdraw(&user, &shares);
     });
-
-    std::println!("GAS_MEASUREMENT: withdraw {}", instructions);
 }
 
 #[test]
 fn gas_harvest() {
-    let (env, vault, admin, token) = setup_vault();
-    // Seed vault so harvest is valid (non-zero shares)
-    let user = Address::generate(&env);
-    mint_tokens(&env, &token, &admin, &user, 10_000_000);
-    vault.deposit(&user, &1_000_000_i128);
+    let (env, vault, admin, token) = setup();
+    // Need at least one depositor so total_shares > 0.
+    let depositor = Address::generate(&env);
+    mint(&env, &token, &admin, &depositor, 1_000_000);
+    vault.deposit(&depositor, &1_000_000);
 
-    // Keeper needs yield tokens
     let keeper = Address::generate(&env);
-    mint_tokens(&env, &token, &admin, &keeper, 5_000_000);
+    mint(&env, &token, &admin, &keeper, 500_000);
 
-    let instructions = measure(&env, || {
-        vault.harvest(&keeper, &100_000_i128);
+    measure(&env, "harvest", || {
+        vault.harvest(&keeper, &500_000);
     });
+}
 
-    std::println!("GAS_MEASUREMENT: harvest {}", instructions);
+#[test]
+fn gas_harvest_token() {
+    let (env, vault, admin, token) = setup();
+    // Register an alt yield token.
+    let alt_token_address = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    vault.register_yield_token(&alt_token_address);
+
+    // Seed depositor.
+    let depositor = Address::generate(&env);
+    mint(&env, &token, &admin, &depositor, 1_000_000);
+    vault.deposit(&depositor, &1_000_000);
+
+    // Give keeper alt tokens.
+    let keeper = Address::generate(&env);
+    StellarAssetClient::new(&env, &alt_token_address).mint(&keeper, &500_000);
+
+    measure(&env, "harvest_token", || {
+        vault.harvest_token(&keeper, &alt_token_address, &500_000, &500_000);
+    });
+}
+
+#[test]
+fn gas_register_yield_token() {
+    let (env, vault, admin, _token) = setup();
+    let alt = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+
+    measure(&env, "register_yield_token", || {
+        vault.register_yield_token(&alt);
+    });
 }
 
 #[test]
 fn gas_pause() {
-    let (env, vault, admin, _token) = setup_vault();
+    let (env, vault, admin, _token) = setup();
 
-    let instructions = measure(&env, || {
+    measure(&env, "pause", || {
         vault.pause(&admin);
     });
-
-    std::println!("GAS_MEASUREMENT: pause {}", instructions);
 }
 
 #[test]
 fn gas_unpause() {
-    let (env, vault, admin, _token) = setup_vault();
+    let (env, vault, admin, _token) = setup();
     vault.pause(&admin);
 
-    let instructions = measure(&env, || {
+    measure(&env, "unpause", || {
         vault.unpause(&admin);
     });
-
-    std::println!("GAS_MEASUREMENT: unpause {}", instructions);
 }
 
 #[test]
 fn gas_is_paused() {
-    let (env, vault, _admin, _token) = setup_vault();
+    let (env, vault, _admin, _token) = setup();
 
-    let instructions = measure(&env, || {
-        vault.is_paused();
+    measure(&env, "is_paused", || {
+        let _ = vault.is_paused();
     });
-
-    std::println!("GAS_MEASUREMENT: is_paused {}", instructions);
-}
-
-#[test]
-fn gas_total_assets() {
-    let (env, vault, _admin, _token) = setup_vault();
-
-    let instructions = measure(&env, || {
-        vault.total_assets();
-    });
-
-    std::println!("GAS_MEASUREMENT: total_assets {}", instructions);
-}
-
-#[test]
-fn gas_balance_of() {
-    let (env, vault, _admin, _token) = setup_vault();
-    let user = Address::generate(&env);
-
-    let instructions = measure(&env, || {
-        vault.balance_of(&user);
-    });
-
-    std::println!("GAS_MEASUREMENT: balance_of {}", instructions);
 }
 
 #[test]
 fn gas_set_fees() {
-    let (env, vault, admin, _token) = setup_vault();
+    let (env, vault, admin, _token) = setup();
 
-    let instructions = measure(&env, || {
+    measure(&env, "set_fees", || {
         vault.set_fees(&admin, &100_u32, &50_u32);
     });
-
-    std::println!("GAS_MEASUREMENT: set_fees {}", instructions);
 }
 
-// upgrade requires a real wasm hash — skip in unit test mode (it's a Wasm-only op).
-// The CI wasm build test covers compile correctness; upgrade gas is noted as N/A.
 #[test]
-fn gas_upgrade_skipped() {
-    // Upgrade consumes a Wasm blob at runtime. We record a sentinel so the
-    // baseline file has an entry, but the comparison script ignores sentinels
-    // with value 0.
-    std::println!("GAS_MEASUREMENT: upgrade 0");
+fn gas_set_treasury() {
+    let (env, vault, admin, _token) = setup();
+    let treasury = Address::generate(&env);
+
+    measure(&env, "set_treasury", || {
+        vault.set_treasury(&admin, &treasury);
+    });
+}
+
+#[test]
+fn gas_withdraw_fees() {
+    let (env, vault, admin, token) = setup();
+    // Set a fee and perform a harvest to accumulate fees.
+    vault.set_fees(&admin, &500_u32, &0_u32); // 5% performance fee
+    let treasury = Address::generate(&env);
+    vault.set_treasury(&admin, &treasury);
+
+    let depositor = Address::generate(&env);
+    mint(&env, &token, &admin, &depositor, 1_000_000);
+    vault.deposit(&depositor, &1_000_000);
+
+    let keeper = Address::generate(&env);
+    mint(&env, &token, &admin, &keeper, 100_000);
+    vault.harvest(&keeper, &100_000);
+
+    measure(&env, "withdraw_fees", || {
+        vault.withdraw_fees(&admin);
+    });
+}
+
+#[test]
+fn gas_total_fees_collected() {
+    let (env, vault, _admin, _token) = setup();
+
+    measure(&env, "total_fees_collected", || {
+        let _ = vault.total_fees_collected();
+    });
+}
+
+#[test]
+fn gas_total_assets() {
+    let (env, vault, _admin, _token) = setup();
+
+    measure(&env, "total_assets", || {
+        let _ = vault.total_assets();
+    });
+}
+
+#[test]
+fn gas_balance_of() {
+    let (env, vault, _admin, _token) = setup();
+    let user = Address::generate(&env);
+
+    measure(&env, "balance_of", || {
+        let _ = vault.balance_of(&user);
+    });
 }

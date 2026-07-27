@@ -162,7 +162,7 @@ pub fn vote_on_proposal(
         .ok_or(VaultError::NotInitialized)?;
 
     if has_voted(env, proposal_id, &voter) {
-        return Err(VaultError::InvalidAddress); // Already voted
+        return Err(VaultError::AlreadyVoted);
     }
 
     if matches!(proposal.status, ProposalStatus::Pending) {
@@ -201,11 +201,11 @@ pub fn execute_proposal(
     // Verify execution time has passed
     let current_time = env.ledger().timestamp();
     if current_time < proposal.execution_time {
-        return Err(VaultError::InvalidAddress); // Timelock not expired
+        return Err(VaultError::TimelockNotExpired);
     }
 
     if !matches!(proposal.status, ProposalStatus::Approved) {
-        return Err(VaultError::InvalidAddress); // Not approved
+        return Err(VaultError::NotApproved);
     }
 
     proposal.status = ProposalStatus::Executed;
