@@ -48,6 +48,14 @@ mod proptest_strategies;
 mod tvl_cap_test;
 #[cfg(test)]
 mod harvest_cooldown_test;
+#[cfg(test)]
+mod pause_lifecycle_test;
+#[cfg(test)]
+mod event_test;
+#[cfg(test)]
+mod seed_ratio_test;
+#[cfg(test)]
+mod cei_fuzz_test;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
@@ -1307,6 +1315,13 @@ impl AuraVault {
     /// single instance-storage entry.
     pub fn total_assets(env: Env) -> i128 {
         get_total_deposited(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // total_shares  (read-only)
+    // -----------------------------------------------------------------------
+    pub fn total_shares(env: Env) -> i128 {
+        get_total_shares(&env)
     }
 
     // -----------------------------------------------------------------------
