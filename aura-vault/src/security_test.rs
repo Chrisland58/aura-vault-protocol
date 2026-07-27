@@ -17,6 +17,7 @@ mod security_tests {
     use soroban_sdk::token::StellarAssetClient;
 
     use crate::{AuraVault, AuraVaultClient, VaultError};
+    use crate::invariants::invariants::{assert_invariants, snapshot_share_price, assert_share_price_not_decreased};
 
     // -----------------------------------------------------------------------
     // Helpers
@@ -57,6 +58,7 @@ mod security_tests {
         let user = Address::generate(&env);
         mint(&env, &token, &admin, &user, 1_000_000);
         vault.deposit(&user, &1_000_000);
+        assert_invariants(&env, &vault, &[user.clone()]);
 
         let shares_before = vault.balance_of(&user);
         vault.withdraw(&user, &shares_before);
@@ -64,6 +66,7 @@ mod security_tests {
         // After withdraw completes, shares are zero — state was settled.
         assert_eq!(vault.balance_of(&user), 0);
         assert_eq!(vault.total_assets(), 0);
+        assert_invariants(&env, &vault, &[user]);
     }
 
     /// A second withdraw after the first must fail (shares already burned).
@@ -74,13 +77,17 @@ mod security_tests {
         let attacker = Address::generate(&env);
         mint(&env, &token, &admin, &attacker, 1_000_000);
         vault.deposit(&attacker, &1_000_000);
+        assert_invariants(&env, &vault, &[attacker.clone()]);
 
         let shares = vault.balance_of(&attacker);
         vault.withdraw(&attacker, &shares);
+        assert_invariants(&env, &vault, &[attacker.clone()]);
 
         // Second withdraw attempt with the same shares — must fail.
         let result = vault.try_withdraw(&attacker, &shares);
         assert_eq!(result, Err(Ok(VaultError::InsufficientShares)));
+        // State must remain consistent after the rejected call
+        assert_invariants(&env, &vault, &[attacker]);
     }
 
     /// Deposit then immediate second deposit cannot double-mint shares.
@@ -91,7 +98,9 @@ mod security_tests {
         mint(&env, &token, &admin, &user, 2_000_000);
 
         vault.deposit(&user, &1_000_000);
+        assert_invariants(&env, &vault, &[user.clone()]);
         vault.deposit(&user, &1_000_000);
+        assert_invariants(&env, &vault, &[user.clone()]);
 
         // Exactly 2_000_000 shares — no double-minting.
         assert_eq!(vault.balance_of(&user), 2_000_000);
@@ -422,17 +431,23 @@ mod security_tests {
         let seeder = Address::generate(&env);
         mint(&env, &token, &admin, &seeder, 1);
         vault.deposit(&seeder, &1);
+        assert_invariants(&env, &vault, &[seeder.clone()]);
 
         // Inflate total_assets drastically via harvest so share price ≫ 1.
         // 1 share worth 1_000_000_001 tokens.
         mint(&env, &token, &admin, &admin, 1_000_000_000);
+        let price_before = snapshot_share_price(&vault);
         vault.harvest(&admin, &1_000_000_000);
+        assert_invariants(&env, &vault, &[seeder.clone()]);
+        assert_share_price_not_decreased(price_before, &vault);
 
         // Victim deposits 1 token — would get 0 shares (floor division).
         let victim = Address::generate(&env);
         mint(&env, &token, &admin, &victim, 1);
         let result = vault.try_deposit(&victim, &1);
         assert_eq!(result, Err(Ok(VaultError::ZeroAmount)));
+        // State must be unchanged after the rejected deposit
+        assert_invariants(&env, &vault, &[seeder, victim]);
     }
 
     /// Harvesting with zero shares outstanding must be rejected.
@@ -456,11 +471,14 @@ mod security_tests {
         let alice = Address::generate(&env);
         mint(&env, &token, &admin, &alice, 5_000_000);
         vault.deposit(&alice, &5_000_000);
+        assert_invariants(&env, &vault, &[alice.clone()]);
 
         let shares = vault.balance_of(&alice);
         let assets_before = vault.total_assets();
 
         vault.pause(&admin);
+        // State consistent while paused
+        assert_invariants(&env, &vault, &[alice.clone()]);
 
         // All mutations blocked.
         let stranger = Address::generate(&env);
@@ -472,9 +490,11 @@ mod security_tests {
         // State unchanged after pause/unpause.
         assert_eq!(vault.balance_of(&alice), shares);
         assert_eq!(vault.total_assets(), assets_before);
+        assert_invariants(&env, &vault, &[alice.clone()]);
 
         // Normal operation resumes.
         let redeemed = vault.withdraw(&alice, &shares);
         assert_eq!(redeemed, 5_000_000);
+        assert_invariants(&env, &vault, &[alice]);
     }
 }

@@ -6,6 +6,7 @@ use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 use soroban_sdk::token::StellarAssetClient;
 
 use crate::{AuraVault, AuraVaultClient, VaultError};
+use crate::invariants::invariants::{assert_invariants, snapshot_share_price, assert_share_price_not_decreased};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -139,6 +140,7 @@ fn test_first_deposit_mints_one_to_one() {
     assert_eq!(minted, 1_000_000);
     assert_eq!(vault.total_assets(), 1_000_000);
     assert_eq!(vault.balance_of(&user), 1_000_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 #[test]
@@ -149,14 +151,19 @@ fn test_second_deposit_uses_share_formula() {
     let alice = Address::generate(&env);
     mint(&env, &token, &admin, &alice, 1_000_000);
     vault.deposit(&alice, &1_000_000);
+    assert_invariants(&env, &vault, &[alice.clone()]);
 
     mint(&env, &token, &admin, &admin, 200_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &200_000);
+    assert_invariants(&env, &vault, &[alice.clone()]);
+    assert_share_price_not_decreased(price_before, &vault);
 
     let bob = Address::generate(&env);
     mint(&env, &token, &admin, &bob, 600_000);
     let minted = vault.deposit(&bob, &600_000);
     assert_eq!(minted, 500_000);
+    assert_invariants(&env, &vault, &[alice, bob]);
 }
 
 #[test]
@@ -168,7 +175,10 @@ fn test_two_equal_depositors_each_hold_half() {
     mint(&env, &token, &admin, &bob, 1_000_000);
 
     vault.deposit(&alice, &1_000_000);
+    assert_invariants(&env, &vault, &[alice.clone(), bob.clone()]);
+
     vault.deposit(&bob, &1_000_000);
+    assert_invariants(&env, &vault, &[alice.clone(), bob.clone()]);
 
     let alice_shares = vault.balance_of(&alice);
     let bob_shares = vault.balance_of(&bob);
@@ -186,6 +196,7 @@ fn test_deposit_emits_indexed_event() {
     // (Soroban testutils don't expose event topic filtering directly; we verify
     // by ensuring the function succeeds with the new event signature.)
     assert_eq!(vault.balance_of(&user), 1_000_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 // Multiple deposits from same user accumulate correctly
@@ -196,8 +207,11 @@ fn test_multiple_deposits_same_user_accumulate() {
     mint(&env, &token, &admin, &user, 3_000_000);
 
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     assert_eq!(vault.balance_of(&user), 3_000_000);
     assert_eq!(vault.total_assets(), 3_000_000);
@@ -220,17 +234,22 @@ fn test_multi_deposit_same_user_with_yield_between_deposits() {
     mint(&env, &token, &admin, &user, 1_000_000);
     let shares_1 = vault.deposit(&user, &1_000_000);
     assert_eq!(shares_1, 1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     // Inject yield: 500_000 tokens → share price rises to 1.5 tokens/share
     mint(&env, &token, &admin, &admin, 500_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &500_000);
     assert_eq!(vault.total_assets(), 1_500_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
+    assert_share_price_not_decreased(price_before, &vault);
 
     // Second deposit from same user at the new share price:
     // new_shares = floor(1_500_000 × 1_000_000 / 1_500_000) = 1_000_000
     mint(&env, &token, &admin, &user, 1_500_000);
     let shares_2 = vault.deposit(&user, &1_500_000);
     assert_eq!(shares_2, 1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     // User now holds 2_000_000 shares; vault has 3_000_000 tokens
     assert_eq!(vault.balance_of(&user), 2_000_000);
@@ -239,6 +258,7 @@ fn test_multi_deposit_same_user_with_yield_between_deposits() {
     // Withdrawing all shares must return all assets (sole depositor)
     let redeemed = vault.withdraw(&user, &2_000_000);
     assert_eq!(redeemed, 3_000_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 // Issue #46: Share precision — small deposit into large vault rounds by ≤1 stroop.
@@ -249,6 +269,7 @@ fn test_share_precision_small_deposit_into_large_vault() {
     let seeder = Address::generate(&env);
     mint(&env, &token, &admin, &seeder, 1_000_000_000);
     vault.deposit(&seeder, &1_000_000_000);
+    assert_invariants(&env, &vault, &[seeder.clone()]);
 
     // Deposit 7 stroops — minimum meaningful unit
     let user = Address::generate(&env);
@@ -256,10 +277,12 @@ fn test_share_precision_small_deposit_into_large_vault() {
     let minted = vault.deposit(&user, &7);
     // 7 × 1_000_000_000 / 1_000_000_000 = 7 (no rounding at 1:1 ratio)
     assert_eq!(minted, 7);
+    assert_invariants(&env, &vault, &[seeder.clone(), user.clone()]);
 
     // Round-trip loss must be ≤ 1 stroop
     let received = vault.withdraw(&user, &minted);
     assert!(received >= 6, "round-trip loss must be ≤ 1 stroop, got {received}");
+    assert_invariants(&env, &vault, &[seeder, user]);
 }
 
 // ---------------------------------------------------------------------------
@@ -307,12 +330,15 @@ fn test_withdraw_all_shares_zeros_vault() {
     let user = Address::generate(&env);
     mint(&env, &token, &admin, &user, 5_000_000);
     vault.deposit(&user, &5_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     let shares = vault.balance_of(&user);
     vault.withdraw(&user, &shares);
 
     assert_eq!(vault.total_assets(), 0);
     assert_eq!(vault.balance_of(&user), 0);
+    // empty vault: invariant 3 (shares==0 → assets==0) is the key check here
+    assert_invariants(&env, &vault, &[user]);
 }
 
 #[test]
@@ -321,12 +347,16 @@ fn test_harvest_then_withdraw_yields_more() {
     let user = Address::generate(&env);
     mint(&env, &token, &admin, &user, 1_000_000);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     let shares = vault.balance_of(&user);
     let pre_harvest_assets = vault.total_assets();
 
     mint(&env, &token, &admin, &admin, 500_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &500_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
+    assert_share_price_not_decreased(price_before, &vault);
 
     let post_harvest_assets = vault.total_assets();
     assert!(post_harvest_assets > pre_harvest_assets);
@@ -334,6 +364,7 @@ fn test_harvest_then_withdraw_yields_more() {
     let received = vault.withdraw(&user, &shares);
     assert!(received > pre_harvest_assets);
     assert_eq!(received, 1_500_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 #[test]
@@ -347,10 +378,12 @@ fn test_withdraw_does_not_affect_other_depositor_balance() {
 
     vault.deposit(&alice, &1_000_000);
     vault.deposit(&bob, &1_000_000);
+    assert_invariants(&env, &vault, &[alice.clone(), bob.clone()]);
 
     let bob_shares_before = vault.balance_of(&bob);
     let alice_shares = vault.balance_of(&alice);
     vault.withdraw(&alice, &alice_shares);
+    assert_invariants(&env, &vault, &[alice, bob.clone()]);
 
     assert_eq!(vault.balance_of(&bob), bob_shares_before);
 }
@@ -398,12 +431,16 @@ fn test_harvest_by_non_admin_keeper_succeeds() {
     let user = Address::generate(&env);
     mint(&env, &token, &admin, &user, 1_000_000);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     let keeper = Address::generate(&env);
     mint(&env, &token, &admin, &keeper, 1_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&keeper, &1_000);
     // setup() sets fees to 0, so full 1_000 is credited
     assert_eq!(vault.total_assets(), 1_001_000);
+    assert_invariants(&env, &vault, &[user]);
+    assert_share_price_not_decreased(price_before, &vault);
 }
 
 // ---------------------------------------------------------------------------
@@ -420,10 +457,13 @@ fn test_pause_blocks_mutating_operations() {
     assert_eq!(vault.try_deposit(&user, &1_000_000), Err(Ok(VaultError::VaultPaused)));
     assert_eq!(vault.try_withdraw(&user, &1), Err(Ok(VaultError::VaultPaused)));
     assert_eq!(vault.try_harvest(&admin, &1_000), Err(Ok(VaultError::VaultPaused)));
+    // State must be consistent even while paused
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     vault.unpause(&admin);
     vault.deposit(&user, &1_000_000);
     assert_eq!(vault.balance_of(&user), 1_000_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 // ---------------------------------------------------------------------------
@@ -436,17 +476,21 @@ fn test_harvest_collects_performance_fee_and_records_total_fees() {
     let user = Address::generate(&env);
     mint(&env, &token, &admin, &user, 1_000_000);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     // Enable 10% performance fee
     vault.set_fees(&admin, &1000_u32, &0_u32);
     vault.set_treasury(&admin, &admin);
 
     mint(&env, &token, &admin, &admin, 1_000_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &1_000_000);
 
     // Net yield = 900_000 (fee = 100_000)
     assert_eq!(vault.total_assets(), 1_900_000);
     assert_eq!(vault.total_fees_collected(), 100_000);
+    assert_invariants(&env, &vault, &[user]);
+    assert_share_price_not_decreased(price_before, &vault);
 }
 
 #[test]
@@ -457,17 +501,22 @@ fn test_withdraw_fees_transfers_to_treasury_and_resets_total_fees() {
 
     mint(&env, &token, &admin, &user, 1_000_000);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     vault.set_fees(&admin, &1000_u32, &0_u32);
     vault.set_treasury(&admin, &treasury);
 
     mint(&env, &token, &admin, &admin, 1_000_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
+    assert_share_price_not_decreased(price_before, &vault);
 
     let withdrawn = vault.withdraw_fees(&admin);
     assert_eq!(withdrawn, 100_000);
     assert_eq!(vault.total_fees_collected(), 0);
     assert_eq!(StellarAssetClient::new(&env, &token).balance(&treasury), 100_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 // ---------------------------------------------------------------------------
@@ -481,14 +530,17 @@ fn test_deposit_withdraw_round_trip_rounding() {
     let seeder = Address::generate(&env);
     mint(&env, &token, &admin, &seeder, 1_000_000);
     vault.deposit(&seeder, &1_000_000);
+    assert_invariants(&env, &vault, &[seeder.clone()]);
 
     let amounts: &[i128] = &[1, 7, 100, 999, 1_000_000, 9_999_999, 100_000_000];
     for &amount in amounts {
         let user = Address::generate(&env);
         mint(&env, &token, &admin, &user, amount);
         let minted = vault.deposit(&user, &amount);
+        assert_invariants(&env, &vault, &[seeder.clone(), user.clone()]);
         if minted > 0 {
             let received = vault.withdraw(&user, &minted);
+            assert_invariants(&env, &vault, &[seeder.clone(), user.clone()]);
             assert!(
                 received >= amount - 1,
                 "round-trip: deposited {amount}, received {received}"
@@ -511,11 +563,13 @@ fn test_share_sum_invariant() {
     for (user, &amount) in users.iter().zip(deposit_amounts.iter()) {
         mint(&env, &token, &admin, user, amount);
         vault.deposit(user, &amount);
+        assert_invariants(&env, &vault, &users);
     }
 
     for user in &users[..2] {
         let s = vault.balance_of(user);
         vault.withdraw(user, &s);
+        assert_invariants(&env, &vault, &users);
         assert_eq!(vault.balance_of(user), 0);
     }
     for user in &users[2..] {
@@ -534,12 +588,16 @@ fn test_harvest_non_dilution() {
     let alice = Address::generate(&env);
     mint(&env, &token, &admin, &alice, 1_000_000);
     vault.deposit(&alice, &1_000_000);
+    assert_invariants(&env, &vault, &[alice.clone()]);
 
     let alice_shares_before = vault.balance_of(&alice);
     let assets_before = vault.total_assets();
 
     mint(&env, &token, &admin, &admin, 300_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &300_000);
+    assert_invariants(&env, &vault, &[alice.clone()]);
+    assert_share_price_not_decreased(price_before, &vault);
 
     assert_eq!(vault.balance_of(&alice), alice_shares_before);
     assert!(vault.total_assets() > assets_before);
@@ -560,7 +618,9 @@ fn test_balance_of_distinct_addresses_no_collision() {
     mint(&env, &token, &admin, &addr_b, 2_000_000);
 
     vault.deposit(&addr_a, &1_000_000);
+    assert_invariants(&env, &vault, &[addr_a.clone(), addr_b.clone()]);
     vault.deposit(&addr_b, &2_000_000);
+    assert_invariants(&env, &vault, &[addr_a.clone(), addr_b.clone()]);
 
     assert_ne!(vault.balance_of(&addr_a), vault.balance_of(&addr_b));
     assert_eq!(vault.balance_of(&addr_a), 1_000_000);
@@ -1240,4 +1300,359 @@ fn test_no_phantom_yield_after_full_withdraw() {
     // Bob gets all the yield
     let bob_pending = vault.pending_yield(&bob);
     assert_eq!(bob_pending, 100_000);
+}
+
+// ===========================================================================
+// SEP-41 TRANSFER / ALLOWANCE TESTS
+//
+// These tests verify the SEP-41 token interface (transfer, approve,
+// transfer_from, allowance) on the underlying Stellar Asset Contract that
+// the vault wraps, and confirm that the vault's own token-moving paths
+// (deposit / withdraw) are correctly blocked when the vault is paused.
+//
+// The Stellar Asset Contract (SAC) is a compliant SEP-41 implementation.
+// Failure conditions (over-balance, over-allowance) trap the executor, so
+// they are covered with #[should_panic] tests as prescribed by the spec.
+// ===========================================================================
+
+mod sep41_transfer_allowance {
+    extern crate std;
+
+    use soroban_sdk::{
+        symbol_short,
+        testutils::Address as _,
+        token::Client as TokenClient,
+        token::StellarAssetClient,
+        Address, Env,
+    };
+
+    use crate::{AuraVault, AuraVaultClient, VaultError};
+
+    // -----------------------------------------------------------------------
+    // Module-level setup helper
+    // Mirrors the top-level `setup()` so this module is self-contained.
+    // Returns (env, token_address, admin).
+    // -----------------------------------------------------------------------
+    fn token_setup() -> (Env, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token_addr = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        (env, token_addr, admin)
+    }
+
+    /// Mint `amount` underlying tokens to `recipient` via the SAC admin.
+    fn mint(env: &Env, token: &Address, admin: &Address, recipient: &Address, amount: i128) {
+        StellarAssetClient::new(env, token).mint(recipient, &amount);
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: deploy + initialise the vault alongside a token; returns
+    // (env, vault_client, vault_address, token_address, admin).
+    // -----------------------------------------------------------------------
+    fn vault_setup() -> (Env, AuraVaultClient<'static>, Address, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token_addr = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let vault_addr = env.register_contract(None, AuraVault);
+        let vault = AuraVaultClient::new(&env, &vault_addr);
+        vault.initialize(&admin, &token_addr);
+        (env, vault, vault_addr, token_addr, admin)
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 1 — transfer correct amount between addresses
+    //
+    // Criterion: after token.transfer(from → to, amount), `to`'s balance
+    // increases by exactly `amount` and `from`'s balance decreases by the
+    // same amount.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_sep41_transfer_correct_amount() {
+        let (env, token_addr, admin) = token_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        mint(&env, &token_addr, &admin, &alice, 1_000_000);
+
+        let alice_before = token.balance(&alice);
+        let bob_before = token.balance(&bob);
+
+        token.transfer(&alice, &bob, &400_000);
+
+        assert_eq!(
+            token.balance(&alice),
+            alice_before - 400_000,
+            "alice balance should decrease by transferred amount"
+        );
+        assert_eq!(
+            token.balance(&bob),
+            bob_before + 400_000,
+            "bob balance should increase by transferred amount"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 2 — transfer more than balance → panic (trap)
+    //
+    // Criterion: the SAC traps when the sender tries to transfer more tokens
+    // than their available balance. Per the SEP-41 spec, failure conditions
+    // are signalled by trapping rather than returning an error code.
+    // -----------------------------------------------------------------------
+    #[test]
+    #[should_panic]
+    fn test_sep41_transfer_more_than_balance_panics() {
+        let (env, token_addr, admin) = token_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        mint(&env, &token_addr, &admin, &alice, 500);
+
+        // Attempting to transfer 501 when alice only has 500 must trap.
+        token.transfer(&alice, &bob, &501);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3 — approve then transfer_from within allowance
+    //
+    // Criterion: after alice approves spender for `amount` (with a far-future
+    // live_until_ledger), spender can call transfer_from and the tokens move
+    // correctly; the allowance is consumed by the transferred amount.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_sep41_approve_then_transfer_from_within_allowance() {
+        let (env, token_addr, admin) = token_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        mint(&env, &token_addr, &admin, &alice, 1_000_000);
+
+        // Approve spender to spend up to 300_000 from alice's balance.
+        // live_until_ledger is set far in the future (current + 10_000).
+        let live_until = env.ledger().sequence() + 10_000;
+        token.approve(&alice, &spender, &300_000, &live_until);
+
+        // Verify the allowance was recorded.
+        assert_eq!(
+            token.allowance(&alice, &spender),
+            300_000,
+            "allowance should be 300_000 after approve"
+        );
+
+        let alice_before = token.balance(&alice);
+        let bob_before = token.balance(&bob);
+
+        // Spender transfers 200_000 from alice to bob.
+        token.transfer_from(&spender, &alice, &bob, &200_000);
+
+        assert_eq!(
+            token.balance(&alice),
+            alice_before - 200_000,
+            "alice's balance should decrease by 200_000"
+        );
+        assert_eq!(
+            token.balance(&bob),
+            bob_before + 200_000,
+            "bob's balance should increase by 200_000"
+        );
+        // Remaining allowance must be reduced by the transferred amount.
+        assert_eq!(
+            token.allowance(&alice, &spender),
+            100_000,
+            "allowance should be reduced to 100_000 after partial transfer_from"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 4 — transfer_from exceeding allowance → panic (trap)
+    //
+    // Criterion: attempting to transfer_from more than the approved allowance
+    // traps the executor. Aligns with the SEP-41 failure-condition spec.
+    // -----------------------------------------------------------------------
+    #[test]
+    #[should_panic]
+    fn test_sep41_transfer_from_exceeds_allowance_panics() {
+        let (env, token_addr, admin) = token_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        let spender = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        mint(&env, &token_addr, &admin, &alice, 1_000_000);
+
+        let live_until = env.ledger().sequence() + 10_000;
+        // Approve only 100 stroops.
+        token.approve(&alice, &spender, &100, &live_until);
+
+        // Attempt to transfer 101 — must trap.
+        token.transfer_from(&spender, &alice, &bob, &101);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5 — Transfer event emitted with correct fields
+    //
+    // Criterion: after a successful token.transfer call, env.events().all()
+    // contains an event from the token contract whose topics Vec starts with
+    //   topics[0] = Symbol("transfer")
+    //   topics[1] = from: Address
+    //   topics[2] = to: Address
+    // conforming to the SEP-41 event specification.
+    //
+    // We use soroban_sdk::IntoVal to convert the expected Rust values to
+    // soroban_sdk::Val for comparison with the stored raw event entries.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_sep41_transfer_event_emitted_with_correct_fields() {
+        use soroban_sdk::{testutils::Events as _, IntoVal, Val};
+
+        let (env, token_addr, admin) = token_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        mint(&env, &token_addr, &admin, &alice, 1_000_000);
+
+        let transfer_amount: i128 = 250_000;
+        token.transfer(&alice, &bob, &transfer_amount);
+
+        // env.events().all() returns a soroban_sdk::Vec<(Address, Vec<Val>, Val)>.
+        // Convert to std Vec for ergonomic iteration.
+        let all_events = env.events().all();
+        let events_std: std::vec::Vec<_> = all_events.iter().collect();
+
+        // The SEP-41 / SAC "transfer" event format:
+        //   topics[0] = Symbol("transfer")
+        //   topics[1] = from: Address
+        //   topics[2] = to: Address
+        //   data      = amount: i128 (legacy SAC format)
+        let transfer_sym: Val = symbol_short!("transfer").into_val(&env);
+        let alice_val: Val = alice.clone().into_val(&env);
+        let bob_val: Val = bob.clone().into_val(&env);
+
+        let found = events_std.iter().any(|(contract_id, topics, _data)| {
+            // Event must come from the token contract.
+            if *contract_id != token_addr {
+                return false;
+            }
+            // The topics Vec must have at least 3 entries.
+            if topics.len() < 3 {
+                return false;
+            }
+            // topics[0] == Symbol("transfer")
+            let t0: Val = topics.get(0).unwrap();
+            if t0 != transfer_sym {
+                return false;
+            }
+            // topics[1] == alice (from)
+            let t1: Val = topics.get(1).unwrap();
+            if t1 != alice_val {
+                return false;
+            }
+            // topics[2] == bob (to)
+            let t2: Val = topics.get(2).unwrap();
+            t2 == bob_val
+        });
+
+        assert!(
+            found,
+            "expected a SEP-41 'transfer' event \
+             (from=alice, to=bob, amount={transfer_amount}) \
+             but none matched in the event list"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 6 — Token transfer blocked while vault is paused
+    //
+    // Criterion: the vault's deposit and withdraw functions call
+    // token.transfer internally. When the vault is paused, both functions
+    // must return VaultPaused without executing any token transfer, leaving
+    // token balances unchanged.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_sep41_transfer_blocked_while_vault_paused() {
+        let (env, vault, _vault_addr, token_addr, admin) = vault_setup();
+        let token = TokenClient::new(&env, &token_addr);
+
+        let alice = Address::generate(&env);
+        mint(&env, &token_addr, &admin, &alice, 1_000_000);
+
+        // Seed alice's position so she has shares to withdraw later.
+        vault.deposit(&alice, &500_000);
+        let shares = vault.balance_of(&alice);
+        assert!(shares > 0, "alice should have shares after deposit");
+
+        // --- Pause the vault ---
+        vault.pause();
+        assert!(vault.is_paused(), "vault must be paused");
+
+        // Record balances *after* pause, *before* any blocked operations.
+        let alice_token_balance_before = token.balance(&alice);
+        let vault_token_balance_before = token.balance(&_vault_addr);
+        let vault_total_assets_before = vault.total_assets();
+        let alice_shares_before = vault.balance_of(&alice);
+
+        // Attempt deposit while paused → must fail with VaultPaused.
+        let deposit_result = vault.try_deposit(&alice, &500_000);
+        assert_eq!(
+            deposit_result,
+            Err(Ok(VaultError::VaultPaused)),
+            "deposit must be blocked with VaultPaused when vault is paused"
+        );
+
+        // Attempt withdraw while paused → must fail with VaultPaused.
+        let withdraw_result = vault.try_withdraw(&alice, &shares);
+        assert_eq!(
+            withdraw_result,
+            Err(Ok(VaultError::VaultPaused)),
+            "withdraw must be blocked with VaultPaused when vault is paused"
+        );
+
+        // Confirm that no token balances changed — no transfer occurred.
+        assert_eq!(
+            token.balance(&alice),
+            alice_token_balance_before,
+            "alice's token balance must be unchanged while vault is paused"
+        );
+        assert_eq!(
+            token.balance(&_vault_addr),
+            vault_token_balance_before,
+            "vault's token balance must be unchanged while vault is paused"
+        );
+        assert_eq!(
+            vault.total_assets(),
+            vault_total_assets_before,
+            "vault total_assets must be unchanged while paused"
+        );
+        assert_eq!(
+            vault.balance_of(&alice),
+            alice_shares_before,
+            "alice's share balance must be unchanged while vault is paused"
+        );
+
+        // --- Unpause and verify operations resume ---
+        vault.unpause();
+        assert!(!vault.is_paused(), "vault must be unpaused");
+
+        // Deposit must succeed after unpause.
+        let new_shares = vault.deposit(&alice, &100_000);
+        assert!(
+            new_shares > 0,
+            "deposit should succeed and mint shares after unpause"
+        );
+    }
 }
