@@ -42,7 +42,7 @@
     "eslint-config-next": "16.2.12",
     "size-limit": "11.1.6",
     "tailwindcss": "^4",
-    "typescript": "^5",
+    "typescript": "^7",
     "vite": "^6.4.3",
     "vitest": "^2.1.9"
   }
