@@ -1,4 +1,6 @@
 import crypto from "crypto";
+import http from "node:http";
+import https from "node:https";
 import { Router, Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 
@@ -70,7 +72,6 @@ const BACKOFF_MS = [10_000, 30_000, 60_000, 300_000, 900_000, 3_600_000, 10_800_
 
 async function attemptDelivery(delivery: DeliveryRecord, endpoint: WebhookEndpoint, event: WebhookEvent): Promise<void> {
   if (isRateLimited(endpoint.id)) {
-    // Re-queue after current rate-limit window resets
     const bucket = rateBuckets.get(endpoint.id)!;
     delivery.nextRetryAt = new Date(bucket.resetAt).toISOString();
     delivery.updatedAt   = new Date().toISOString();
@@ -83,21 +84,10 @@ async function attemptDelivery(delivery: DeliveryRecord, endpoint: WebhookEndpoi
   delivery.updatedAt = new Date().toISOString();
 
   try {
-    const res = await fetch(endpoint.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Aura-Signature": sign(endpoint.secret, body),
-        "X-Aura-Event": event.type,
-        "X-Aura-Delivery": delivery.id,
-      },
-      body,
-      signal: AbortSignal.timeout(10_000),
-    });
+    const statusCode = await sendWebhookRequest(endpoint.url, endpoint.secret, body, event.type, delivery.id);
+    delivery.lastStatusCode = statusCode;
 
-    delivery.lastStatusCode = res.status;
-
-    if (res.ok) {
+    if (statusCode >= 200 && statusCode < 300) {
       delivery.status      = "success";
       delivery.nextRetryAt = null;
     } else {
@@ -109,6 +99,29 @@ async function attemptDelivery(delivery: DeliveryRecord, endpoint: WebhookEndpoi
   }
 
   delivery.updatedAt = new Date().toISOString();
+}
+
+function sendWebhookRequest(url: string, secret: string, body: string, eventType: EventType, deliveryId: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const client = parsed.protocol === "https:" ? https : http;
+    const req = client.request(parsed, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Aura-Signature": sign(secret, body),
+        "X-Aura-Event": eventType,
+        "X-Aura-Delivery": deliveryId,
+      },
+    }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
 }
 
 function scheduleNextRetry(delivery: DeliveryRecord, endpoint: WebhookEndpoint, event: WebhookEvent): void {
@@ -124,7 +137,9 @@ function scheduleNextRetry(delivery: DeliveryRecord, endpoint: WebhookEndpoint, 
 
 function scheduleRetry(delivery: DeliveryRecord, endpoint: WebhookEndpoint, event: WebhookEvent, delayMs: number): void {
   delivery.nextRetryAt = new Date(Date.now() + delayMs).toISOString();
-  setTimeout(() => attemptDelivery(delivery, endpoint, event), delayMs);
+  setTimeout(() => {
+    void attemptDelivery(delivery, endpoint, event);
+  }, delayMs);
 }
 
 // ── Public dispatch API ───────────────────────────────────────────────────────
@@ -148,8 +163,7 @@ export function dispatchEvent(type: EventType, payload: Record<string, unknown>)
       updatedAt:      new Date().toISOString(),
     };
     deliveries.set(delivery.id, delivery);
-    // fire-and-forget
-    attemptDelivery(delivery, endpoint, event);
+    void attemptDelivery(delivery, endpoint, event);
   }
 
   return event;
@@ -222,6 +236,13 @@ webhookRouter.post("/verify", (req: Request, res: Response) => {
   const { secret, body, signature } = req.body as { secret?: string; body?: string; signature?: string };
   if (!secret || !body || !signature) { res.status(400).json({ error: "secret, body, signature required" }); return; }
   const expected = sign(secret, body);
-  const valid = crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  // timingSafeEqual requires equal-length buffers; pad to the same length so that
+  // a short / malformed signature still returns valid=false instead of throwing.
+  const expBuf = Buffer.from(expected);
+  const sigBuf = Buffer.from(signature);
+  let valid = false;
+  if (expBuf.length === sigBuf.length) {
+    valid = crypto.timingSafeEqual(expBuf, sigBuf);
+  }
   res.json({ valid });
 });

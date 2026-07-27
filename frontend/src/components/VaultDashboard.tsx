@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import WalletConnect from "./WalletConnect";
 import VaultActions from "./VaultActions";
-import { useAnimatedNumber } from "@/lib/useAnimatedNumber";
+import { useOnboarding } from "@/components/OnboardingChecklist";
+import { FinancialValue } from "./FinancialValue";
 
 interface VaultStats {
   tvl: string;
@@ -56,18 +57,26 @@ function StatCard({
 }
 
 function TxRow({ tx }: { tx: Transaction }) {
-  const icon = tx.type === "deposit" ? "↓" : tx.type === "withdraw" ? "↑" : "⚡";
-  const color =
-    tx.type === "deposit"
-      ? "text-emerald-600 dark:text-emerald-400"
-      : tx.type === "withdraw"
-      ? "text-red-500 dark:text-red-400"
-      : "text-amber-500 dark:text-amber-400";
+  const sentimentMap = {
+    deposit: "positive" as const,
+    withdraw: "negative" as const,
+    harvest: "warning" as const,
+  };
+  const iconMap = {
+    deposit: "↓",
+    withdraw: "↑",
+    harvest: "⚡",
+  };
+
   return (
     <div className="flex items-center justify-between py-2.5 border-b border-zinc-100 dark:border-zinc-800 last:border-0">
       <div className="flex items-center gap-3">
-        <span className={`text-lg font-bold ${color}`} aria-hidden="true">
-          {icon}
+        <span aria-hidden="true">
+          <FinancialValue
+            value={iconMap[tx.type]}
+            sentiment={sentimentMap[tx.type]}
+            className="text-lg"
+          />
         </span>
         <div>
           <p className="text-sm font-medium capitalize text-zinc-800 dark:text-zinc-200">{tx.type}</p>
@@ -104,6 +113,12 @@ export default function VaultDashboard() {
   const [loading, setLoading] = useState(true);
   const [liveMsg, setLiveMsg] = useState("");
   const wsRef = useRef<WebSocket | null>(null);
+  const { markComplete } = useOnboarding();
+
+  // Mark "view_dashboard" milestone when dashboard is first viewed
+  useEffect(() => {
+    markComplete("view_dashboard");
+  }, [markComplete]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -237,14 +252,24 @@ export default function VaultDashboard() {
             decimals={4}
             sub="Underlying tokens"
           />
-          <StatCard
+          <div
             data-cy="stat-shares"
-            label="Your Shares"
-            value={fmtNumber(stats!.userShares)}
-            rawValue={parseFloat(stats!.userShares)}
-            decimals={4}
-            sub={`@ ${stats!.pricePerShare} / share`}
-          />
+            className="flex flex-col gap-1 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">Your Shares</span>
+            <AnimatedShareBalance
+              value={fmtNumber(stats!.userShares)}
+              className="font-mono text-2xl font-semibold text-zinc-900 dark:text-zinc-50"
+            />
+            <span className="text-xs text-zinc-400">
+              <AnimatedShareBalance
+                value={stats!.pricePerShare}
+                className="font-mono"
+                priceMode
+              />
+              {" / share"}
+            </span>
+          </div>
         </div>
       )}
 
@@ -287,7 +312,7 @@ export default function VaultDashboard() {
           aria-label="Recent transactions"
         >
           {txs.length === 0 ? (
-            <p className="py-6 text-center text-sm text-zinc-400">No transactions yet.</p>
+            <EmptyState variant="no-transactions" className="py-4" />
           ) : (
             txs.map((tx) => (
               <div key={tx.id} role="listitem">

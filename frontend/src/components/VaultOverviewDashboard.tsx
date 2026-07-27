@@ -2,6 +2,8 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import VaultHealthScore from './VaultHealthScore';
+import { EmptyState } from './EmptyState';
 
 interface VaultBalance {
   usd: number;
@@ -315,6 +317,11 @@ const VaultOverviewDashboard: React.FC = () => {
           </div>
         </div>
 
+        {/* Vault Health Score */}
+        <div className="mb-8">
+          <VaultHealthScore />
+        </div>
+
         {/* Recent Transactions */}
         <div className="bg-white dark:bg-slate-800 rounded-lg shadow-lg overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
@@ -366,8 +373,8 @@ const VaultOverviewDashboard: React.FC = () => {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={4} className="px-6 py-8 text-center text-slate-500 dark:text-slate-400">
-                      No transactions yet
+                    <td colSpan={4}>
+                      <EmptyState variant="no-transactions" className="py-4" />
                     </td>
                   </tr>
                 )}
