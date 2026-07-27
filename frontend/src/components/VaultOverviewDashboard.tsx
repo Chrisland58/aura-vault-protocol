@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import VaultHealthScore from './VaultHealthScore';
 
 interface VaultBalance {
   usd: number;
@@ -313,6 +314,11 @@ const VaultOverviewDashboard: React.FC = () => {
               Active participants
             </p>
           </div>
+        </div>
+
+        {/* Vault Health Score */}
+        <div className="mb-8">
+          <VaultHealthScore />
         </div>
 
         {/* Recent Transactions */}

@@ -167,3 +167,70 @@ variable "email_forwarding_destinations" {
   type        = list(string)
   default     = []
 }
+
+# ── Issue #520: WAF Variables ──────────────────────────────────────────────
+
+variable "enable_waf" {
+  description = "Enable AWS WAF v2 for the Application Load Balancer"
+  type        = bool
+  default     = true
+}
+
+variable "waf_rate_limit_threshold" {
+  description = "Maximum requests per 5-minute window per IP before WAF rate limiting kicks in"
+  type        = number
+  default     = 2000
+}
+
+variable "waf_blocked_countries" {
+  description = "ISO 3166-1 alpha-2 country codes to block via WAF geo rule (empty = disabled)"
+  type        = list(string)
+  default     = []
+}
+
+# ── Issue #521: RDS Snapshot Testing Variables ────────────────────────────
+
+variable "rds_snapshot_test_validation_table" {
+  description = "Table name used for row count validation during RDS restore drills"
+  type        = string
+  default     = "vault_positions"
+}
+
+variable "pagerduty_events_url" {
+  description = "PagerDuty Events API v2 URL for restore drill failure alerts (empty = disabled)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+# ── Issue #523: Multi-Region / DR Variables ───────────────────────────────
+
+variable "dr_region" {
+  description = "AWS region for disaster recovery (DR)"
+  type        = string
+  default     = "eu-west-1"
+}
+
+variable "dr_vpc_cidr" {
+  description = "CIDR block for the DR region VPC"
+  type        = string
+  default     = "10.1.0.0/16"
+}
+
+variable "dr_availability_zones" {
+  description = "Availability zones in the DR region"
+  type        = list(string)
+  default     = ["eu-west-1a", "eu-west-1b"]
+}
+
+variable "dr_alb_dns_name" {
+  description = "DNS name of the DR region ALB used for Route 53 failover routing"
+  type        = string
+  default     = ""
+}
+
+variable "failover_test_schedule" {
+  description = "EventBridge schedule expression for the quarterly DR failover test reminder"
+  type        = string
+  default     = "cron(0 6 1 1,4,7,10 ? *)"
+}
