@@ -14,7 +14,7 @@
     "test:load:k6": "k6 run src/tests/load.k6.ts"
   },
   "dependencies": {
-    "react": "18.3.1",
+    "react": "19.2.8",
     "react-dom": "18.3.1",
     "recharts": "^3.10.1"
   },
@@ -26,15 +26,15 @@
     "@storybook/addon-mcp": "^0.6.0",
     "@storybook/addon-vitest": "^10.4.6",
     "@storybook/react-vite": "^10.4.6",
-    "@testing-library/jest-dom": "6.6.3",
+    "@testing-library/jest-dom": "7.0.0",
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.1",
     "@types/jest-axe": "3.5.9",
-    "@types/react": "18.3.20",
+    "@types/react": "19.2.17",
     "@types/react-dom": "18.3.5",
     "@vitejs/plugin-react": "4.3.4",
-    "@vitest/browser": "2.1.8",
-    "@vitest/coverage-v8": "2.1.8",
+    "@vitest/browser": "4.1.10",
+    "@vitest/coverage-v8": "4.1.10",
     "axe-core": "4.12.1",
     "jest-axe": "9.0.0",
     "jsdom": "25.0.1",
