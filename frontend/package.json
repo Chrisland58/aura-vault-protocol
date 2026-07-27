@@ -24,7 +24,7 @@
     "react": "19.2.8",
     "react-chartjs-2": "^5.2.0",
     "react-dom": "19.2.8",
-    "react-i18next": "^15.5.1",
+    "react-i18next": "^17.0.11",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
