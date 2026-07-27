@@ -4,6 +4,7 @@ import { Skeleton } from "./Skeleton";
 import { ErrorMessage } from "./ErrorMessage";
 import { translateError, type UserError } from "../lib/errors";
 import { useInlineLiveRegion } from "./LiveRegion";
+import { TermTooltip } from "./Tooltip";
 
 interface Props {
   onToast: (msg: ToastMessage) => void;
@@ -63,7 +64,9 @@ export function WithdrawForm({ onToast }: Props) {
       ) : (
         <form onSubmit={handleSubmit} noValidate>
           <div className="field">
-            <label htmlFor={`${id}-shares`}>Shares</label>
+            <label htmlFor={`${id}-shares`}>
+              <TermTooltip term="Vault Shares" />
+            </label>
             <input
               ref={inputRef}
               id={`${id}-shares`}

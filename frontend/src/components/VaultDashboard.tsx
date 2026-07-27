@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import WalletConnect from "./WalletConnect";
 import VaultActions from "./VaultActions";
 import { useOnboarding } from "@/components/OnboardingChecklist";
-import AnimatedShareBalance from "./AnimatedShareBalance";
+import { FinancialValue } from "./FinancialValue";
 
 interface VaultStats {
   tvl: string;
@@ -46,18 +46,26 @@ function StatCard({
 }
 
 function TxRow({ tx }: { tx: Transaction }) {
-  const icon = tx.type === "deposit" ? "↓" : tx.type === "withdraw" ? "↑" : "⚡";
-  const color =
-    tx.type === "deposit"
-      ? "text-emerald-600 dark:text-emerald-400"
-      : tx.type === "withdraw"
-      ? "text-red-500 dark:text-red-400"
-      : "text-amber-500 dark:text-amber-400";
+  const sentimentMap = {
+    deposit: "positive" as const,
+    withdraw: "negative" as const,
+    harvest: "warning" as const,
+  };
+  const iconMap = {
+    deposit: "↓",
+    withdraw: "↑",
+    harvest: "⚡",
+  };
+
   return (
     <div className="flex items-center justify-between py-2.5 border-b border-zinc-100 dark:border-zinc-800 last:border-0">
       <div className="flex items-center gap-3">
-        <span className={`text-lg font-bold ${color}`} aria-hidden="true">
-          {icon}
+        <span aria-hidden="true">
+          <FinancialValue
+            value={iconMap[tx.type]}
+            sentiment={sentimentMap[tx.type]}
+            className="text-lg"
+          />
         </span>
         <div>
           <p className="text-sm font-medium capitalize text-zinc-800 dark:text-zinc-200">{tx.type}</p>
