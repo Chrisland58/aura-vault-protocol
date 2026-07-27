@@ -6,6 +6,7 @@ use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 use soroban_sdk::token::StellarAssetClient;
 
 use crate::{AuraVault, AuraVaultClient, VaultError};
+use crate::invariants::invariants::{assert_invariants, snapshot_share_price, assert_share_price_not_decreased};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -139,6 +140,7 @@ fn test_first_deposit_mints_one_to_one() {
     assert_eq!(minted, 1_000_000);
     assert_eq!(vault.total_assets(), 1_000_000);
     assert_eq!(vault.balance_of(&user), 1_000_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 #[test]
@@ -149,14 +151,19 @@ fn test_second_deposit_uses_share_formula() {
     let alice = Address::generate(&env);
     mint(&env, &token, &admin, &alice, 1_000_000);
     vault.deposit(&alice, &1_000_000);
+    assert_invariants(&env, &vault, &[alice.clone()]);
 
     mint(&env, &token, &admin, &admin, 200_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &200_000);
+    assert_invariants(&env, &vault, &[alice.clone()]);
+    assert_share_price_not_decreased(price_before, &vault);
 
     let bob = Address::generate(&env);
     mint(&env, &token, &admin, &bob, 600_000);
     let minted = vault.deposit(&bob, &600_000);
     assert_eq!(minted, 500_000);
+    assert_invariants(&env, &vault, &[alice, bob]);
 }
 
 #[test]
@@ -168,7 +175,10 @@ fn test_two_equal_depositors_each_hold_half() {
     mint(&env, &token, &admin, &bob, 1_000_000);
 
     vault.deposit(&alice, &1_000_000);
+    assert_invariants(&env, &vault, &[alice.clone(), bob.clone()]);
+
     vault.deposit(&bob, &1_000_000);
+    assert_invariants(&env, &vault, &[alice.clone(), bob.clone()]);
 
     let alice_shares = vault.balance_of(&alice);
     let bob_shares = vault.balance_of(&bob);
@@ -186,6 +196,7 @@ fn test_deposit_emits_indexed_event() {
     // (Soroban testutils don't expose event topic filtering directly; we verify
     // by ensuring the function succeeds with the new event signature.)
     assert_eq!(vault.balance_of(&user), 1_000_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 // Multiple deposits from same user accumulate correctly
@@ -196,8 +207,11 @@ fn test_multiple_deposits_same_user_accumulate() {
     mint(&env, &token, &admin, &user, 3_000_000);
 
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     assert_eq!(vault.balance_of(&user), 3_000_000);
     assert_eq!(vault.total_assets(), 3_000_000);
@@ -220,17 +234,22 @@ fn test_multi_deposit_same_user_with_yield_between_deposits() {
     mint(&env, &token, &admin, &user, 1_000_000);
     let shares_1 = vault.deposit(&user, &1_000_000);
     assert_eq!(shares_1, 1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     // Inject yield: 500_000 tokens → share price rises to 1.5 tokens/share
     mint(&env, &token, &admin, &admin, 500_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &500_000);
     assert_eq!(vault.total_assets(), 1_500_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
+    assert_share_price_not_decreased(price_before, &vault);
 
     // Second deposit from same user at the new share price:
     // new_shares = floor(1_500_000 × 1_000_000 / 1_500_000) = 1_000_000
     mint(&env, &token, &admin, &user, 1_500_000);
     let shares_2 = vault.deposit(&user, &1_500_000);
     assert_eq!(shares_2, 1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     // User now holds 2_000_000 shares; vault has 3_000_000 tokens
     assert_eq!(vault.balance_of(&user), 2_000_000);
@@ -239,6 +258,7 @@ fn test_multi_deposit_same_user_with_yield_between_deposits() {
     // Withdrawing all shares must return all assets (sole depositor)
     let redeemed = vault.withdraw(&user, &2_000_000);
     assert_eq!(redeemed, 3_000_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 // Issue #46: Share precision — small deposit into large vault rounds by ≤1 stroop.
@@ -249,6 +269,7 @@ fn test_share_precision_small_deposit_into_large_vault() {
     let seeder = Address::generate(&env);
     mint(&env, &token, &admin, &seeder, 1_000_000_000);
     vault.deposit(&seeder, &1_000_000_000);
+    assert_invariants(&env, &vault, &[seeder.clone()]);
 
     // Deposit 7 stroops — minimum meaningful unit
     let user = Address::generate(&env);
@@ -256,10 +277,12 @@ fn test_share_precision_small_deposit_into_large_vault() {
     let minted = vault.deposit(&user, &7);
     // 7 × 1_000_000_000 / 1_000_000_000 = 7 (no rounding at 1:1 ratio)
     assert_eq!(minted, 7);
+    assert_invariants(&env, &vault, &[seeder.clone(), user.clone()]);
 
     // Round-trip loss must be ≤ 1 stroop
     let received = vault.withdraw(&user, &minted);
     assert!(received >= 6, "round-trip loss must be ≤ 1 stroop, got {received}");
+    assert_invariants(&env, &vault, &[seeder, user]);
 }
 
 // ---------------------------------------------------------------------------
@@ -307,12 +330,15 @@ fn test_withdraw_all_shares_zeros_vault() {
     let user = Address::generate(&env);
     mint(&env, &token, &admin, &user, 5_000_000);
     vault.deposit(&user, &5_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     let shares = vault.balance_of(&user);
     vault.withdraw(&user, &shares);
 
     assert_eq!(vault.total_assets(), 0);
     assert_eq!(vault.balance_of(&user), 0);
+    // empty vault: invariant 3 (shares==0 → assets==0) is the key check here
+    assert_invariants(&env, &vault, &[user]);
 }
 
 #[test]
@@ -321,12 +347,16 @@ fn test_harvest_then_withdraw_yields_more() {
     let user = Address::generate(&env);
     mint(&env, &token, &admin, &user, 1_000_000);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     let shares = vault.balance_of(&user);
     let pre_harvest_assets = vault.total_assets();
 
     mint(&env, &token, &admin, &admin, 500_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &500_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
+    assert_share_price_not_decreased(price_before, &vault);
 
     let post_harvest_assets = vault.total_assets();
     assert!(post_harvest_assets > pre_harvest_assets);
@@ -334,6 +364,7 @@ fn test_harvest_then_withdraw_yields_more() {
     let received = vault.withdraw(&user, &shares);
     assert!(received > pre_harvest_assets);
     assert_eq!(received, 1_500_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 #[test]
@@ -347,10 +378,12 @@ fn test_withdraw_does_not_affect_other_depositor_balance() {
 
     vault.deposit(&alice, &1_000_000);
     vault.deposit(&bob, &1_000_000);
+    assert_invariants(&env, &vault, &[alice.clone(), bob.clone()]);
 
     let bob_shares_before = vault.balance_of(&bob);
     let alice_shares = vault.balance_of(&alice);
     vault.withdraw(&alice, &alice_shares);
+    assert_invariants(&env, &vault, &[alice, bob.clone()]);
 
     assert_eq!(vault.balance_of(&bob), bob_shares_before);
 }
@@ -398,12 +431,16 @@ fn test_harvest_by_non_admin_keeper_succeeds() {
     let user = Address::generate(&env);
     mint(&env, &token, &admin, &user, 1_000_000);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     let keeper = Address::generate(&env);
     mint(&env, &token, &admin, &keeper, 1_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&keeper, &1_000);
     // setup() sets fees to 0, so full 1_000 is credited
     assert_eq!(vault.total_assets(), 1_001_000);
+    assert_invariants(&env, &vault, &[user]);
+    assert_share_price_not_decreased(price_before, &vault);
 }
 
 // ---------------------------------------------------------------------------
@@ -420,10 +457,13 @@ fn test_pause_blocks_mutating_operations() {
     assert_eq!(vault.try_deposit(&user, &1_000_000), Err(Ok(VaultError::VaultPaused)));
     assert_eq!(vault.try_withdraw(&user, &1), Err(Ok(VaultError::VaultPaused)));
     assert_eq!(vault.try_harvest(&admin, &1_000), Err(Ok(VaultError::VaultPaused)));
+    // State must be consistent even while paused
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     vault.unpause(&admin);
     vault.deposit(&user, &1_000_000);
     assert_eq!(vault.balance_of(&user), 1_000_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 // ---------------------------------------------------------------------------
@@ -436,17 +476,21 @@ fn test_harvest_collects_performance_fee_and_records_total_fees() {
     let user = Address::generate(&env);
     mint(&env, &token, &admin, &user, 1_000_000);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     // Enable 10% performance fee
     vault.set_fees(&admin, &1000_u32, &0_u32);
     vault.set_treasury(&admin, &admin);
 
     mint(&env, &token, &admin, &admin, 1_000_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &1_000_000);
 
     // Net yield = 900_000 (fee = 100_000)
     assert_eq!(vault.total_assets(), 1_900_000);
     assert_eq!(vault.total_fees_collected(), 100_000);
+    assert_invariants(&env, &vault, &[user]);
+    assert_share_price_not_decreased(price_before, &vault);
 }
 
 #[test]
@@ -457,17 +501,22 @@ fn test_withdraw_fees_transfers_to_treasury_and_resets_total_fees() {
 
     mint(&env, &token, &admin, &user, 1_000_000);
     vault.deposit(&user, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
 
     vault.set_fees(&admin, &1000_u32, &0_u32);
     vault.set_treasury(&admin, &treasury);
 
     mint(&env, &token, &admin, &admin, 1_000_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &1_000_000);
+    assert_invariants(&env, &vault, &[user.clone()]);
+    assert_share_price_not_decreased(price_before, &vault);
 
     let withdrawn = vault.withdraw_fees(&admin);
     assert_eq!(withdrawn, 100_000);
     assert_eq!(vault.total_fees_collected(), 0);
     assert_eq!(StellarAssetClient::new(&env, &token).balance(&treasury), 100_000);
+    assert_invariants(&env, &vault, &[user]);
 }
 
 // ---------------------------------------------------------------------------
@@ -481,14 +530,17 @@ fn test_deposit_withdraw_round_trip_rounding() {
     let seeder = Address::generate(&env);
     mint(&env, &token, &admin, &seeder, 1_000_000);
     vault.deposit(&seeder, &1_000_000);
+    assert_invariants(&env, &vault, &[seeder.clone()]);
 
     let amounts: &[i128] = &[1, 7, 100, 999, 1_000_000, 9_999_999, 100_000_000];
     for &amount in amounts {
         let user = Address::generate(&env);
         mint(&env, &token, &admin, &user, amount);
         let minted = vault.deposit(&user, &amount);
+        assert_invariants(&env, &vault, &[seeder.clone(), user.clone()]);
         if minted > 0 {
             let received = vault.withdraw(&user, &minted);
+            assert_invariants(&env, &vault, &[seeder.clone(), user.clone()]);
             assert!(
                 received >= amount - 1,
                 "round-trip: deposited {amount}, received {received}"
@@ -511,11 +563,13 @@ fn test_share_sum_invariant() {
     for (user, &amount) in users.iter().zip(deposit_amounts.iter()) {
         mint(&env, &token, &admin, user, amount);
         vault.deposit(user, &amount);
+        assert_invariants(&env, &vault, &users);
     }
 
     for user in &users[..2] {
         let s = vault.balance_of(user);
         vault.withdraw(user, &s);
+        assert_invariants(&env, &vault, &users);
         assert_eq!(vault.balance_of(user), 0);
     }
     for user in &users[2..] {
@@ -534,12 +588,16 @@ fn test_harvest_non_dilution() {
     let alice = Address::generate(&env);
     mint(&env, &token, &admin, &alice, 1_000_000);
     vault.deposit(&alice, &1_000_000);
+    assert_invariants(&env, &vault, &[alice.clone()]);
 
     let alice_shares_before = vault.balance_of(&alice);
     let assets_before = vault.total_assets();
 
     mint(&env, &token, &admin, &admin, 300_000);
+    let price_before = snapshot_share_price(&vault);
     vault.harvest(&admin, &300_000);
+    assert_invariants(&env, &vault, &[alice.clone()]);
+    assert_share_price_not_decreased(price_before, &vault);
 
     assert_eq!(vault.balance_of(&alice), alice_shares_before);
     assert!(vault.total_assets() > assets_before);
@@ -560,7 +618,9 @@ fn test_balance_of_distinct_addresses_no_collision() {
     mint(&env, &token, &admin, &addr_b, 2_000_000);
 
     vault.deposit(&addr_a, &1_000_000);
+    assert_invariants(&env, &vault, &[addr_a.clone(), addr_b.clone()]);
     vault.deposit(&addr_b, &2_000_000);
+    assert_invariants(&env, &vault, &[addr_a.clone(), addr_b.clone()]);
 
     assert_ne!(vault.balance_of(&addr_a), vault.balance_of(&addr_b));
     assert_eq!(vault.balance_of(&addr_a), 1_000_000);
