@@ -122,6 +122,8 @@ export default function VaultActions() {
         <TransactionModal
           type={modal}
           balance={balance}
+          sharePrice={sharePrice}
+          sharePriceUpdatedAt={sharePriceUpdatedAt}
           onClose={() => handleModalClose(modal)}
         />
       )}

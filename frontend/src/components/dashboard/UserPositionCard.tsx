@@ -2,6 +2,7 @@
 
 import React from "react";
 import { DashboardCard } from "./DashboardCard";
+import { ShareBalanceDisplay } from "@/components/ShareBalanceDisplay";
 
 export interface UserPosition {
   /** Underlying token balance redeemable by this user */
@@ -12,6 +13,8 @@ export interface UserPosition {
   sharePrice: string;
   /** Wallet address (truncated display) */
   address: string;
+  /** Unix timestamp (ms) when share price was last fetched */
+  sharePriceUpdatedAt?: number;
 }
 
 export interface UserPositionCardProps {
@@ -78,7 +81,14 @@ export function UserPositionCard({ position, isLoading }: UserPositionCardProps)
           <hr className="border-[var(--color-border)]" />
           <Row
             label="Vault shares held"
-            value={position!.shares}
+            value={
+              <ShareBalanceDisplay
+                shares={position!.shares}
+                sharePrice={position!.sharePrice}
+                sharePriceUpdatedAt={position!.sharePriceUpdatedAt}
+                variant="compact"
+              />
+            }
             testId="position-shares"
           />
           <Row

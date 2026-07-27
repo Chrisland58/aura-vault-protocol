@@ -15,12 +15,22 @@ export interface Transaction {
   type: Exclude<TxType, "all">;
   amount: string; // decimal string
   status: Exclude<TxStatus, "all">;
+  /**
+   * For withdraw/deposit transactions involving shares:
+   * the number of vault shares burned/minted.
+   */
+  shares?: string;
+  /** Current share price at time of display (for equivalent value calculation) */
+  sharePrice?: string;
+  /** Unix timestamp (ms) when sharePrice was fetched */
+  sharePriceUpdatedAt?: number;
 }
 
 export interface TransactionHistoryProps {
   transactions: Transaction[];
   explorerBase?: string; // e.g. "https://stellar.expert/explorer/testnet/tx"
   tokenSymbol?: string;
+  shareSymbol?: string;
 }
 
 // ── Constants (updated to use financial colour system tokens #479) ─────────
@@ -124,6 +134,7 @@ export default function TransactionHistory({
   transactions,
   explorerBase = "https://stellar.expert/explorer/testnet/tx",
   tokenSymbol = "USDC",
+  shareSymbol = "aUSDC",
 }: TransactionHistoryProps) {
   // Filters
   const [typeFilter, setTypeFilter] = useState<TxType>("all");

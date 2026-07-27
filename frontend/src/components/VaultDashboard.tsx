@@ -12,6 +12,7 @@ interface VaultStats {
   userBalance: string;
   userShares: string;
   pricePerShare: string;
+  sharePriceUpdatedAt?: number;
 }
 
 interface Transaction {
@@ -134,6 +135,7 @@ export default function VaultDashboard() {
         userBalance: assets.userBalance ?? "—",
         userShares: assets.userShares ?? "—",
         pricePerShare: assets.pricePerShare ?? "1.0000",
+        sharePriceUpdatedAt: Date.now(),
       });
     } catch {
       setStats({ tvl: "—", apy: "—", userBalance: "—", userShares: "—", pricePerShare: "—" });
