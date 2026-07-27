@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { ChevronDown } from "lucide-react";
 import { useOnboarding } from "@/components/OnboardingChecklist";
+import { ShareBalanceDisplay } from "@/components/ShareBalanceDisplay";
 
 interface WalletState {
   address: string | null;
@@ -312,7 +313,15 @@ function PortfolioSection({ address }: { address: string }) {
         <div>
           <dt className="text-xs text-zinc-500 mb-1">Your Shares</dt>
           <dd data-cy="share-balance" className="font-mono text-sm font-semibold">
-            {data?.shareBalance ?? "—"}
+            {data?.shareBalance && data?.pricePerShare ? (
+              <ShareBalanceDisplay
+                shares={data.shareBalance}
+                sharePrice={data.pricePerShare}
+                variant="compact"
+              />
+            ) : (
+              data?.shareBalance ?? "—"
+            )}
           </dd>
         </div>
         <div>
