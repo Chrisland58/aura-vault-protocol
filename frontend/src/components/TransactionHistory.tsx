@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useCallback } from "react";
 import { ArrowDownCircle, ArrowUpCircle, Zap } from "lucide-react";
+import { ShareBalanceDisplay } from "@/components/ShareBalanceDisplay";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -14,12 +15,22 @@ export interface Transaction {
   type: Exclude<TxType, "all">;
   amount: string; // decimal string
   status: Exclude<TxStatus, "all">;
+  /**
+   * For withdraw/deposit transactions involving shares:
+   * the number of vault shares burned/minted.
+   */
+  shares?: string;
+  /** Current share price at time of display (for equivalent value calculation) */
+  sharePrice?: string;
+  /** Unix timestamp (ms) when sharePrice was fetched */
+  sharePriceUpdatedAt?: number;
 }
 
 export interface TransactionHistoryProps {
   transactions: Transaction[];
   explorerBase?: string; // e.g. "https://stellar.expert/explorer/testnet/tx"
   tokenSymbol?: string;
+  shareSymbol?: string;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -102,6 +113,7 @@ export default function TransactionHistory({
   transactions,
   explorerBase = "https://stellar.expert/explorer/testnet/tx",
   tokenSymbol = "USDC",
+  shareSymbol = "aUSDC",
 }: TransactionHistoryProps) {
   // Filters
   const [typeFilter, setTypeFilter] = useState<TxType>("all");
@@ -377,9 +389,20 @@ export default function TransactionHistory({
                     </span>
                   </td>
 
-                  {/* Amount — signed, with token symbol, right-aligned, monospace */}
+                  {/* Amount — shares with equivalent value if available, otherwise signed amount */}
                   <td className={`whitespace-nowrap px-4 ${cellPy} text-right font-mono text-sm font-medium ${amountColor(tx.type)}`}>
-                    {formatAmount(tx.type, tx.amount, tokenSymbol)}
+                    {tx.shares && tx.sharePrice ? (
+                      <ShareBalanceDisplay
+                        shares={tx.shares}
+                        sharePrice={tx.sharePrice}
+                        sharePriceUpdatedAt={tx.sharePriceUpdatedAt}
+                        tokenSymbol={tokenSymbol}
+                        shareSymbol={shareSymbol}
+                        variant="compact"
+                      />
+                    ) : (
+                      formatAmount(tx.type, tx.amount, tokenSymbol)
+                    )}
                   </td>
 
                   {/* Status */}

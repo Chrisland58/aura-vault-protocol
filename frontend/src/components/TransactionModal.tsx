@@ -1,52 +1,29 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { AlertCircle, CheckCircle, XCircle, ChevronDown, ChevronUp, Info, Check } from "lucide-react";
+import { AlertCircle, Check, CheckCircle, ChevronDown, ChevronUp, Info, XCircle } from "lucide-react";
 import { useHapticsStandalone } from "@/components/HapticFeedback";
+import { ShareBalanceDisplay } from "@/components/ShareBalanceDisplay";
+import {
+  createDefaultAdvancedSettingsState,
+  readAdvancedSettingsState,
+  writeAdvancedSettingsState,
+  type AdvancedSettingsState,
+} from "@/lib/transactionAdvancedSettings";
 
 type TxType = "deposit" | "withdraw";
 /** 1 = Amount, 2 = Review/Sign, 3 = Submit, 4 = Confirmed */
 type Step = 1 | 2 | 3 | 4;
 type TxStatus = "idle" | "pending" | "success" | "error";
 
-type GasPriority = "low" | "medium" | "high";
-
-interface AdvancedSettings {
-  slippageTolerance: number; // percentage, e.g. 0.5
-  gasPriority: GasPriority;
-}
-
-const DEFAULT_ADVANCED_SETTINGS: AdvancedSettings = {
-  slippageTolerance: 0.5,
-  gasPriority: "medium",
-};
-
-const SESSION_KEY = "aura_advanced_settings";
-
-function loadAdvancedSettings(): AdvancedSettings {
-  if (typeof sessionStorage === "undefined") return DEFAULT_ADVANCED_SETTINGS;
-  try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    if (!raw) return DEFAULT_ADVANCED_SETTINGS;
-    return { ...DEFAULT_ADVANCED_SETTINGS, ...JSON.parse(raw) };
-  } catch {
-    return DEFAULT_ADVANCED_SETTINGS;
-  }
-}
-
-function saveAdvancedSettings(s: AdvancedSettings): void {
-  if (typeof sessionStorage === "undefined") return;
-  try {
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify(s));
-  } catch {
-    // storage full or unavailable — silently ignore
-  }
-}
-
 interface Props {
   type: TxType;
   balance: string;
   onClose: () => void;
+  /** Current share price in underlying token units — used in withdraw review */
+  sharePrice?: string;
+  /** Unix timestamp (ms) when sharePrice was last fetched */
+  sharePriceUpdatedAt?: number;
 }
 
 interface GasEstimate {
@@ -280,24 +257,20 @@ function Tooltip({ text }: TooltipProps) {
 }
 
 interface AdvancedSettingsPanelProps {
-  settings: AdvancedSettings;
-  onChange: (updated: AdvancedSettings) => void;
+  settings: AdvancedSettingsState;
+  isOpen: boolean;
+  onToggle: () => void;
+  onChange: (updated: AdvancedSettingsState) => void;
 }
 
-function AdvancedSettingsPanel({ settings, onChange }: AdvancedSettingsPanelProps) {
-  const [open, setOpen] = useState(false);
-
+function AdvancedSettingsPanel({ settings, isOpen, onToggle, onChange }: AdvancedSettingsPanelProps) {
   return (
-    <div
-      className="rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-hidden"
-      data-cy="advanced-settings"
-    >
-      {/* Toggle header */}
+    <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 overflow-hidden" data-cy="advanced-settings">
       <button
         type="button"
-        aria-expanded={open}
+        aria-expanded={isOpen}
         aria-controls="advanced-settings-content"
-        onClick={() => setOpen((v) => !v)}
+        onClick={onToggle}
         className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors"
         data-cy="advanced-settings-toggle"
       >
@@ -305,39 +278,30 @@ function AdvancedSettingsPanel({ settings, onChange }: AdvancedSettingsPanelProp
           Advanced Settings
           <Tooltip text="Optional settings for power users. Defaults are safe for most transactions." />
         </span>
-        {open ? (
+        {isOpen ? (
           <ChevronUp size={16} aria-hidden="true" className="text-zinc-400" />
         ) : (
           <ChevronDown size={16} aria-hidden="true" className="text-zinc-400" />
         )}
       </button>
 
-      {/* Collapsible content */}
       <div
         id="advanced-settings-content"
         role="region"
         aria-label="Advanced Settings"
         className={[
           "overflow-hidden transition-all duration-300 ease-in-out",
-          open ? "max-h-72 opacity-100" : "max-h-0 opacity-0",
+          isOpen ? "max-h-72 opacity-100" : "max-h-0 opacity-0",
         ].join(" ")}
       >
         <div className="flex flex-col gap-5 px-4 pb-4 pt-3 bg-zinc-50 dark:bg-zinc-800/30 border-t border-zinc-200 dark:border-zinc-700">
-
-          {/* Slippage Tolerance */}
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
-              <label
-                htmlFor="slippage-slider"
-                className="text-xs font-medium text-zinc-600 dark:text-zinc-400 flex items-center"
-              >
+              <label htmlFor="slippage-slider" className="text-xs font-medium text-zinc-600 dark:text-zinc-400 flex items-center">
                 Slippage Tolerance
-                <Tooltip text="Maximum price movement you're willing to accept. Higher values reduce failed txs but may result in worse prices. Recommended: 0.1%–1.0%." />
+                <Tooltip text="Maximum price movement you're willing to accept. Higher values reduce failed transactions but may lead to a worse execution price." />
               </label>
-              <span
-                className="font-mono text-xs font-semibold text-zinc-800 dark:text-zinc-200 min-w-[3.5rem] text-right"
-                aria-live="polite"
-              >
+              <span className="font-mono text-xs font-semibold text-zinc-800 dark:text-zinc-200 min-w-[3.5rem] text-right" aria-live="polite">
                 {settings.slippageTolerance.toFixed(1)}%
               </span>
             </div>
@@ -349,9 +313,7 @@ function AdvancedSettingsPanel({ settings, onChange }: AdvancedSettingsPanelProp
               step={0.1}
               value={settings.slippageTolerance}
               onChange={(e) => {
-                const updated = { ...settings, slippageTolerance: parseFloat(e.target.value) };
-                onChange(updated);
-                saveAdvancedSettings(updated);
+                onChange({ ...settings, slippageTolerance: parseFloat(e.target.value) });
               }}
               aria-label={`Slippage tolerance: ${settings.slippageTolerance.toFixed(1)}%`}
               aria-valuemin={0.1}
@@ -373,40 +335,28 @@ function AdvancedSettingsPanel({ settings, onChange }: AdvancedSettingsPanelProp
             )}
           </div>
 
-          {/* Gas Priority */}
           <div className="flex flex-col gap-2">
-            <label
-              htmlFor="gas-priority"
-              className="text-xs font-medium text-zinc-600 dark:text-zinc-400 flex items-center"
-            >
-              Gas Priority
-              <Tooltip text="Higher priority increases network fees but confirms faster. 'Medium' is suitable for most transactions." />
-            </label>
-            <div className="flex gap-2" role="group" aria-label="Gas priority options">
-              {(["low", "medium", "high"] as GasPriority[]).map((level) => (
-                <button
-                  key={level}
-                  type="button"
-                  onClick={() => {
-                    const updated = { ...settings, gasPriority: level };
-                    onChange(updated);
-                    saveAdvancedSettings(updated);
-                  }}
-                  aria-pressed={settings.gasPriority === level}
-                  className={[
-                    "flex-1 rounded-lg py-1.5 text-xs font-semibold capitalize transition-colors border",
-                    settings.gasPriority === level
-                      ? "bg-zinc-900 text-white border-zinc-900 dark:bg-zinc-100 dark:text-black dark:border-zinc-100"
-                      : "border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-700",
-                  ].join(" ")}
-                  data-cy={`gas-priority-${level}`}
-                >
-                  {level}
-                </button>
-              ))}
+            <div className="flex items-center justify-between">
+              <label htmlFor="gas-priority" className="text-xs font-medium text-zinc-600 dark:text-zinc-400 flex items-center">
+                Gas Priority
+                <Tooltip text="Choose a higher priority if you want the transaction confirmed faster, usually at a higher fee." />
+              </label>
             </div>
+            <select
+              id="gas-priority"
+              value={settings.gasPriority}
+              onChange={(e) => {
+                onChange({ ...settings, gasPriority: e.target.value as AdvancedSettingsState["gasPriority"] });
+              }}
+              className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+              data-cy="gas-priority-select"
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="custom">Custom</option>
+            </select>
           </div>
-
         </div>
       </div>
     </div>
@@ -415,7 +365,7 @@ function AdvancedSettingsPanel({ settings, onChange }: AdvancedSettingsPanelProp
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function TransactionModal({ type, balance, onClose }: Props) {
+export default function TransactionModal({ type, balance, onClose, sharePrice, sharePriceUpdatedAt }: Props) {
   const [step, setStep] = useState<Step>(1);
   const [amount, setAmount] = useState("");
   const [amountError, setAmountError] = useState("");
@@ -425,15 +375,21 @@ export default function TransactionModal({ type, balance, onClose }: Props) {
   const [gasEstimate, setGasEstimate] = useState<GasEstimate | null>(null);
   const [gasLoading, setGasLoading] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
-  const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings>(
-    () => loadAdvancedSettings()
-  );
+  const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettingsState>(() => readAdvancedSettingsState());
   const inputRef = useRef<HTMLInputElement>(null);
   const { vibrate } = useHapticsStandalone();
 
   useEffect(() => {
     if (step === 1) inputRef.current?.focus();
   }, [step]);
+
+  useEffect(() => {
+    setAdvancedSettings(readAdvancedSettingsState());
+  }, []);
+
+  useEffect(() => {
+    writeAdvancedSettingsState(advancedSettings);
+  }, [advancedSettings]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -631,12 +587,23 @@ export default function TransactionModal({ type, balance, onClose }: Props) {
           <div data-cy="modal-step-2" className="flex flex-col gap-4">
             <dl className="flex flex-col gap-3 rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800">
               <div className="flex justify-between text-sm">
-                <dt className="text-zinc-500">Amount</dt>
+                <dt className="text-zinc-500">
+                  {type === "withdraw" ? "Shares to Redeem" : "Amount"}
+                </dt>
                 <dd
                   data-cy="modal-review-amount"
-                  className="font-mono font-semibold"
+                  className="font-mono font-semibold text-right"
                 >
-                  {amount}
+                  {type === "withdraw" && sharePrice ? (
+                    <ShareBalanceDisplay
+                      shares={amount}
+                      sharePrice={sharePrice}
+                      sharePriceUpdatedAt={sharePriceUpdatedAt}
+                      variant="compact"
+                    />
+                  ) : (
+                    amount
+                  )}
                 </dd>
               </div>
 
@@ -697,9 +664,12 @@ export default function TransactionModal({ type, balance, onClose }: Props) {
               </p>
             )}
 
-            {/* Advanced Settings */}
             <AdvancedSettingsPanel
               settings={advancedSettings}
+              isOpen={advancedSettings.isOpen}
+              onToggle={() =>
+                setAdvancedSettings((prev) => ({ ...prev, isOpen: !prev.isOpen }))
+              }
               onChange={setAdvancedSettings}
             />
 

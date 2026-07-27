@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import WalletConnect from "./WalletConnect";
 import VaultActions from "./VaultActions";
 import { useOnboarding } from "@/components/OnboardingChecklist";
+import { ShareBalanceDisplay } from "@/components/ShareBalanceDisplay";
 
 interface VaultStats {
   tvl: string;
@@ -11,6 +12,7 @@ interface VaultStats {
   userBalance: string;
   userShares: string;
   pricePerShare: string;
+  sharePriceUpdatedAt?: number;
 }
 
 interface Transaction {
@@ -114,6 +116,7 @@ export default function VaultDashboard() {
         userBalance: assets.userBalance ?? "—",
         userShares: assets.userShares ?? "—",
         pricePerShare: assets.pricePerShare ?? "1.0000",
+        sharePriceUpdatedAt: Date.now(),
       });
     } catch {
       setStats({ tvl: "—", apy: "—", userBalance: "—", userShares: "—", pricePerShare: "—" });
@@ -229,7 +232,11 @@ export default function VaultDashboard() {
             data-cy="stat-shares"
             label="Your Shares"
             value={fmtNumber(stats!.userShares)}
-            sub={`@ ${stats!.pricePerShare} / share`}
+            sub={
+              stats!.userShares !== "—" && stats!.pricePerShare !== "—"
+                ? `≈ ${(parseFloat(stats!.userShares) * parseFloat(stats!.pricePerShare || "0")).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDC`
+                : `@ ${stats!.pricePerShare} / share`
+            }
           />
         </div>
       )}

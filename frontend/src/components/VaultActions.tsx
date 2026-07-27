@@ -10,12 +10,20 @@ export default function VaultActions() {
   const [tab, setTab] = useState<Tab>("deposit");
   const [modal, setModal] = useState<Tab | null>(null);
   const [balance, setBalance] = useState("1000");
+  const [sharePrice, setSharePrice] = useState<string | undefined>(undefined);
+  const [sharePriceUpdatedAt, setSharePriceUpdatedAt] = useState<number | undefined>(undefined);
   const { markComplete } = useOnboarding();
 
   useEffect(() => {
     fetch("/api/vault/balance_of?address=mock")
       .then((r) => r.ok ? r.json() : null)
-      .then((d) => { if (d?.balance) setBalance(d.balance); })
+      .then((d) => {
+        if (d?.balance) setBalance(d.balance);
+        if (d?.sharePrice) {
+          setSharePrice(d.sharePrice);
+          setSharePriceUpdatedAt(Date.now());
+        }
+      })
       .catch(() => {});
   }, []);
 
@@ -74,6 +82,8 @@ export default function VaultActions() {
         <TransactionModal
           type={modal}
           balance={balance}
+          sharePrice={sharePrice}
+          sharePriceUpdatedAt={sharePriceUpdatedAt}
           onClose={() => handleModalClose(modal)}
         />
       )}
