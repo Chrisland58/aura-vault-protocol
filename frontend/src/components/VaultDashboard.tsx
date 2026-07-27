@@ -25,21 +25,32 @@ interface Transaction {
 function StatCard({
   label,
   value,
+  rawValue,
+  decimals,
+  suffix,
   sub,
   "data-cy": dataCy,
 }: {
   label: string;
   value: string;
+  rawValue?: number;
+  decimals?: number;
+  suffix?: string;
   sub?: string;
   "data-cy"?: string;
 }) {
+  const animatedValue = useAnimatedNumber(rawValue ?? 0, { decimals });
+  const displayValue = rawValue !== undefined
+    ? `${animatedValue}${suffix ?? ""}`
+    : value;
+
   return (
     <div
       data-cy={dataCy}
       className="flex flex-col gap-1 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-900"
     >
       <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</span>
-      <span className="font-mono text-2xl font-semibold text-zinc-900 dark:text-zinc-50">{value}</span>
+      <span className="font-mono text-2xl font-semibold text-zinc-900 dark:text-zinc-50">{displayValue}</span>
       {sub && <span className="text-xs text-zinc-400">{sub}</span>}
     </div>
   );
@@ -220,18 +231,25 @@ export default function VaultDashboard() {
             data-cy="stat-tvl"
             label="TVL"
             value={fmtNumber(stats!.tvl)}
+            rawValue={parseFloat(stats!.tvl)}
+            decimals={4}
             sub="Total Value Locked"
           />
           <StatCard
             data-cy="stat-apy"
             label="APY"
             value={`${fmtNumber(stats!.apy)}%`}
+            rawValue={parseFloat(stats!.apy)}
+            decimals={2}
+            suffix="%"
             sub="Annualized yield"
           />
           <StatCard
             data-cy="stat-balance"
             label="Your Balance"
             value={fmtNumber(stats!.userBalance)}
+            rawValue={parseFloat(stats!.userBalance)}
+            decimals={4}
             sub="Underlying tokens"
           />
           <div
