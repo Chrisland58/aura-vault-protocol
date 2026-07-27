@@ -155,7 +155,7 @@ jobs:
           terraform_version: "1.8.5"
 
       - name: Download plan artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: tfplan-staging-${{ github.run_id }}
           path: terraform/staging/
@@ -197,7 +197,7 @@ jobs:
           terraform_version: "1.8.5"
 
       - name: Download plan artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: tfplan-production-${{ github.run_id }}
           path: terraform/production/
