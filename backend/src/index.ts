@@ -1,11 +1,15 @@
-import cors from "cors";
 import express from "express";
+import cors from "cors";
 import { authenticate } from "./middleware/authMiddleware.js";
 import {
   authRateLimiter,
   globalIpRateLimiter,
   userRateLimiter,
 } from "./middleware/rateLimitMiddleware.js";
+import {
+  loggingMiddleware,
+  errorLoggingMiddleware,
+} from "./middleware/loggingMiddleware.js";
 import {
   generateTokens,
   getUserSessions,
@@ -21,41 +25,66 @@ import { emailRouter } from "./routes/emailRoutes.js";
 import { gasRouter } from "./routes/gasRoutes.js";
 import { yieldRouter } from "./routes/yieldRoutes.js";
 import { startWorker, stopWorker } from "./queue.js";
+import { queueRouter } from "./routes/queueRoutes.js";
+import { analyticsRouter } from "./routes/analyticsRoutes.js";
 import { warmCache } from "./services/defi.js";
 import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
+import { startYieldWorker, stopYieldWorker } from "./services/yieldWorker.js";
+import { vaultRouter } from "./routes/vaultRoutes.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(loggingMiddleware());
 app.use(globalIpRateLimiter(["/api/health"]));
 
-app.post("/api/auth/login", authRateLimiter(), async (req, res) => {
-  const { walletAddress, deviceId, tier } = req.body;
-  if (!walletAddress) {
-    res.status(400).json({ error: "walletAddress required" });
-    return;
+// ── A05 Security Misconfiguration: security headers (Helmet) ─────────────────
+applySecurityHeaders(app);
+
+// ── A05 Security Misconfiguration: strict CORS ───────────────────────────────
+// Replace the open cors() with allowlist-driven corsOptions
+app.use(cors(corsOptions));
+
+// ── A09 Logging Failures: correlation IDs + structured request logging ────────
+app.use(correlationIdMiddleware());
+app.use(createRequestLogger());
+
+app.use(express.json({ limit: "1mb" }));
+app.use(globalIpRateLimiter(["/api/health"]));
+
+// ── A03 Injection / A07 Auth Failures: validate login input with Zod ─────────
+app.post(
+  "/api/auth/login",
+  authRateLimiter(),
+  validate(loginSchema),
+  async (req, res) => {
+    const { walletAddress, deviceId, tier } = req.body as {
+      walletAddress: string;
+      deviceId?: string;
+      tier: Tier;
+    };
+
+    const tokens = await generateTokens(walletAddress, deviceId, tier);
+    res.json(tokens);
   }
+);
 
-  const validTier: Tier = tier === "paid" ? "paid" : "free";
-  const tokens = await generateTokens(walletAddress, deviceId, validTier);
-  res.json(tokens);
-});
+app.post(
+  "/api/auth/refresh",
+  authRateLimiter(),
+  validate(refreshSchema),
+  async (req, res) => {
+    const { refreshToken } = req.body as { refreshToken: string };
 
-app.post("/api/auth/refresh", authRateLimiter(), async (req, res) => {
-  const { refreshToken } = req.body;
-  if (!refreshToken) {
-    res.status(400).json({ error: "refreshToken required" });
-    return;
+    const tokens = await refreshAccessToken(refreshToken);
+    if (!tokens) {
+      res.status(401).json({ error: "Invalid or expired refresh token" });
+      return;
+    }
+
+    res.json(tokens);
   }
-
-  const tokens = await refreshAccessToken(refreshToken);
-  if (!tokens) {
-    res.status(401).json({ error: "Invalid or expired refresh token" });
-    return;
-  }
-
-  res.json(tokens);
-});
+);
 
 app.post("/api/auth/logout", authenticate, userRateLimiter(), async (req, res) => {
   const token = req.headers.authorization?.slice(7);
@@ -79,11 +108,14 @@ app.post("/api/auth/revoke-all", authenticate, userRateLimiter(), async (req, re
   res.json({ success: true });
 });
 
+// ── A01 Broken Access Control: all protected routes use `authenticate` ────────
 app.use("/api/webhooks", authenticate, webhookRouter);
 app.use("/api/email", emailRouter);
 app.use("/api/v1/user/portfolio", authenticate, portfolioRouter);
 app.use("/api/v1/gas", gasRouter);
 app.use("/api/v1/yield", yieldRouter);
+app.use("/api/v1/queue", queueRouter);
+app.use("/api/v1/vault", vaultRouter);
 
 app.get("/api/health", async (_req, res) => {
   const redisHealthy = await pingRedis();
@@ -98,6 +130,7 @@ const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
 const server = app.listen(PORT, () => {
   startWorker();
   startEmailWorker();
+  startYieldWorker();
   void warmCache();
   console.log(`Aura Vault backend running on port ${PORT}`);
 });
@@ -106,6 +139,7 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`[shutdown] received ${signal}`);
   stopWorker();
   stopEmailWorker();
+  stopYieldWorker();
   server.close(async () => {
     await disconnectRedis().catch((err) => {
       console.error("[shutdown] redis disconnect failed:", err);
