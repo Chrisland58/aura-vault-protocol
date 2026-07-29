@@ -20,6 +20,7 @@ import portfolioRouter from "./portfolio.js";
 import { emailRouter } from "./routes/emailRoutes.js";
 import { gasRouter } from "./routes/gasRoutes.js";
 import { yieldRouter } from "./routes/yieldRoutes.js";
+import { queueRouter } from "./routes/queueRoutes.js";
 import { startWorker, stopWorker } from "./queue.js";
 import { warmCache } from "./services/defi.js";
 import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
@@ -84,6 +85,7 @@ app.use("/api/email", emailRouter);
 app.use("/api/v1/user/portfolio", authenticate, portfolioRouter);
 app.use("/api/v1/gas", gasRouter);
 app.use("/api/v1/yield", yieldRouter);
+app.use("/api/v1/queue", queueRouter);
 
 app.get("/api/health", async (_req, res) => {
   const redisHealthy = await pingRedis();
