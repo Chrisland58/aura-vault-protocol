@@ -10,6 +10,8 @@ pub use errors::VaultError;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_upgrade;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
