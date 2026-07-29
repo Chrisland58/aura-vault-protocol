@@ -23,6 +23,10 @@ import { yieldRouter } from "./routes/yieldRoutes.js";
 import { startWorker, stopWorker } from "./queue.js";
 import { warmCache } from "./services/defi.js";
 import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
+import {
+  startYieldScheduler,
+  stopYieldScheduler,
+} from "./services/yieldScheduler.js";
 
 const app = express();
 app.use(cors());
@@ -98,6 +102,18 @@ const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
 const server = app.listen(PORT, () => {
   startWorker();
   startEmailWorker();
+  // Yield scheduler: load positions and sources from your DB/cache in production.
+  // The loaders below are no-op stubs; replace them with real DB queries.
+  startYieldScheduler(
+    async () => [], // TODO: replace with DB query for active vault positions
+    async () => [], // TODO: replace with config-driven yield sources
+    {
+      onAlert: (msg, meta) =>
+        console.error("[YieldScheduler] ALERT:", msg, meta ?? ""),
+      onRunError: (err) =>
+        console.error("[YieldScheduler] Run error:", err),
+    }
+  );
   void warmCache();
   console.log(`Aura Vault backend running on port ${PORT}`);
 });
@@ -106,6 +122,7 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`[shutdown] received ${signal}`);
   stopWorker();
   stopEmailWorker();
+  stopYieldScheduler();
   server.close(async () => {
     await disconnectRedis().catch((err) => {
       console.error("[shutdown] redis disconnect failed:", err);

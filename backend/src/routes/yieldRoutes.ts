@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
-import { createYieldService, YieldSource, VaultPosition } from "../services/yieldService.js";
+import { createYieldService, type YieldSource, type VaultPosition } from "../services/yieldService.js";
+import { getSchedulerMetrics } from "../services/yieldScheduler.js";
 
 const yieldService = createYieldService();
 
@@ -62,4 +63,14 @@ yieldRouter.post("/backfill", async (req: Request, res: Response): Promise<void>
     console.error("[yield/backfill]", err);
     res.status(500).json({ error: "Backfill failed" });
   }
+});
+
+/**
+ * GET /api/v1/yield/metrics
+ * Returns monitoring counters for the yield calculation scheduler.
+ * Suitable for scraping by Prometheus (convert to gauge metrics downstream)
+ * or querying from a health-check dashboard.
+ */
+yieldRouter.get("/metrics", (_req: Request, res: Response): void => {
+  res.json(getSchedulerMetrics());
 });
