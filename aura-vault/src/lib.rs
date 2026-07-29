@@ -53,6 +53,8 @@ mod pause_lifecycle_test;
 #[cfg(test)]
 mod event_test;
 #[cfg(test)]
+mod event_snapshots;
+#[cfg(test)]
 mod seed_ratio_test;
 #[cfg(test)]
 mod cei_fuzz_test;
