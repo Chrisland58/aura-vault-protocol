@@ -58,22 +58,6 @@ withdrawalRouter.post(
 );
 
 /**
- * GET /api/v1/withdraw/:jobId
- */
-withdrawalRouter.get(
-  "/:jobId",
-  authenticate,
-  async (req: Request, res: Response): Promise<void> => {
-    const job = getWithdrawalJob(req.params.jobId);
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
-    res.json(job);
-  }
-);
-
-/**
  * GET /api/v1/withdraw/queue/stats
  */
 withdrawalRouter.get(
@@ -81,5 +65,26 @@ withdrawalRouter.get(
   authenticate,
   async (_req: Request, res: Response): Promise<void> => {
     res.json(getQueueStats());
+  }
+);
+
+/**
+ * GET /api/v1/withdraw/:jobId
+ */
+withdrawalRouter.get(
+  "/:jobId",
+  authenticate,
+  async (req: Request, res: Response): Promise<void> => {
+    const jobId = req.params.jobId;
+    if (typeof jobId !== "string") {
+      res.status(400).json({ error: "Invalid job ID" });
+      return;
+    }
+    const job = getWithdrawalJob(jobId);
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+    res.json(job);
   }
 );
