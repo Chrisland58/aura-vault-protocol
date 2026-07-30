@@ -3,7 +3,7 @@
  * Provides PostgreSQL integration for job status tracking
  */
 
-import type { TxJob } from "./queue.js";
+import type { TxJob } from "../queue.js";
 
 export interface DbConfig {
   host?: string;

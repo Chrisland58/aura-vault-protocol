@@ -85,7 +85,7 @@ function resetMocks() {
   vi.resetAllMocks();
   // vi.resetAllMocks() clears the return value of getRedis.
   // Restore it so cache.ts continues to receive our redisMock.
-  vi.mocked(getRedis).mockReturnValue(redisMock as ReturnType<typeof getRedis>);
+  vi.mocked(getRedis).mockReturnValue(redisMock as unknown as ReturnType<typeof getRedis>);
   // Restore default resolved values for Redis operations.
   mockHincrby.mockResolvedValue(1);
   mockSet.mockResolvedValue("OK");

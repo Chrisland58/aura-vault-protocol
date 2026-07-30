@@ -234,7 +234,7 @@ export function createSkipToMainLink(): HTMLAnchorElement {
 /** Announce live region updates for dynamic content */
 export class LiveRegion {
   private element: HTMLElement;
-  private timeout: NodeJS.Timeout | null = null;
+  private timeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(role: 'status' | 'alert' = 'status', atomic = false) {
     this.element = document.createElement('div');

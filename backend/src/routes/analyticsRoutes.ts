@@ -45,7 +45,9 @@ async function loadEventsForAddress(address: string): Promise<TxEvent[]> {
  *   500 { error: "Internal server error" }
  */
 router.get("/:address/analytics", async (req: Request, res: Response) => {
-  const { address } = req.params;
+  const address = Array.isArray(req.params.address)
+    ? req.params.address[0]
+    : req.params.address;
 
   // Basic Stellar address validation (G… public keys are 56 chars)
   if (!address || !/^[A-Z2-7]{56}$/.test(address)) {

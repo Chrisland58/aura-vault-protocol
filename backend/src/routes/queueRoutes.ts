@@ -24,7 +24,7 @@ queueRouter.get("/dashboard", (req: Request, res: Response) => {
   // Paginate the waiting queue (primary list callers iterate)
   const { data: waitingPage, nextCursor } = paginateArray(
     allWaiting,
-    (job: Record<string, unknown>, index: number) => ({
+    (job, index) => ({
       id: typeof job.id === "string" ? job.id : String(index),
       timestamp: typeof job.createdAt === "string" ? job.createdAt : "0",
     }),
@@ -63,7 +63,7 @@ queueRouter.get("/dlq", (req: Request, res: Response) => {
 
   const { data, nextCursor } = paginateArray(
     allDead,
-    (job: Record<string, unknown>, index: number) => ({
+    (job, index) => ({
       id: typeof job.id === "string" ? job.id : String(index),
       timestamp: typeof job.createdAt === "string" ? job.createdAt : "0",
     }),
