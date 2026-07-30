@@ -153,6 +153,36 @@ pub trait AuraVaultTrait {
     /// - [`VaultError::MathOverflow`] — arithmetic overflow.
     fn harvest(env: Env, caller: Address, yield_amount: i128) -> Result<(), VaultError>;
 
+    /// Distribute underlying-token yield proportionally to all shareholders via
+    /// the cumulative yield-per-share accumulator.
+    fn distribute_yield(env: Env, caller: Address, yield_amount: i128) -> Result<(), VaultError>;
+
+    /// Distribute a whitelisted alternative yield token using an explicitly
+    /// supplied underlying value.
+    fn distribute_yield_token(
+        env: Env,
+        caller: Address,
+        alt_token: Address,
+        yield_amount: i128,
+        underlying_amount: i128,
+    ) -> Result<(), VaultError>;
+
+    /// Alias for `distribute_yield` used by strategies that collect yield from
+    /// an external source before crediting the vault.
+    fn collect_yield(env: Env, caller: Address, amount: i128) -> Result<(), VaultError>;
+
+    /// Preview the effect of a yield distribution without mutating state.
+    fn preview_distribution(env: Env, yield_amount: i128) -> Result<(i128, i128, i128, bool), VaultError>;
+
+    /// Claim all accrued yield for the caller.
+    fn collect_pending_yield(env: Env, caller: Address) -> Result<i128, VaultError>;
+
+    /// Return the caller's currently claimable pending yield.
+    fn pending_yield(env: Env, addr: Address) -> i128;
+
+    /// Return the current distribution epoch counter.
+    fn distribution_epoch(env: Env) -> u64;
+
     /// Halt all mutating operations (deposit, withdraw, harvest).
     ///
     /// Admin-only. Emits a `paused` event. Use [`unpause`] to resume.
@@ -263,6 +293,21 @@ pub trait AuraVaultTrait {
     ///
     /// Read-only; no authorization required.
     fn total_fees_collected(env: Env) -> i128;
+
+    /// Set the vault TVL cap. A value of `0` disables the cap.
+    fn set_tvl_cap(env: Env, admin: Address, cap: i128) -> Result<(), VaultError>;
+
+    /// Return the current TVL cap. `0` means the cap is disabled.
+    fn get_tvl_cap(env: Env) -> i128;
+
+    /// Configure the minimum delay between successful harvests.
+    fn set_harvest_cooldown(env: Env, admin: Address, secs: u64) -> Result<(), VaultError>;
+
+    /// Reset the harvest cooldown timestamp so the next harvest is not blocked.
+    fn reset_harvest_cooldown(env: Env, admin: Address) -> Result<(), VaultError>;
+
+    /// Return the timestamp of the last successful harvest.
+    fn last_harvest_time(env: Env) -> u64;
 
     /// Returns the total underlying tokens currently tracked by the vault
     /// (`total_deposited`), in the underlying token's smallest unit.

@@ -24,6 +24,14 @@ pub enum DataKey {
     LastHarvestTime,
     /// Minimum seconds between harvests (0 = no cooldown). Issue #471.
     HarvestCooldownSecs,
+    /// Global cumulative yield-per-share accumulator (scaled by YIELD_PRECISION).
+    CumulativeYps,
+    /// Monotonically-increasing epoch counter, incremented on each distribution.
+    DistributionEpoch,
+    /// Per-user checkpoint: the value of CumulativeYps when user last collected / deposited.
+    UserCheckpoint(Address),
+    /// Per-user pending yield: yield earned but not yet claimed.
+    UserPendingYield(Address),
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -238,4 +246,59 @@ pub fn get_harvest_cooldown_secs(env: &Env) -> u64 {
 
 pub fn set_harvest_cooldown_secs(env: &Env, secs: u64) {
     env.storage().instance().set(&DataKey::HarvestCooldownSecs, &secs);
+}
+
+// ---------------------------------------------------------------------------
+// Yield-distribution accumulator helpers (instance storage)
+// ---------------------------------------------------------------------------
+
+/// Global cumulative yield-per-share (YPS) accumulator.
+/// Scaled by YIELD_PRECISION (1e12) to preserve sub-stroop precision.
+pub fn get_cumulative_yps(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::CumulativeYps).unwrap_or(0)
+}
+
+pub fn set_cumulative_yps(env: &Env, val: i128) {
+    env.storage().instance().set(&DataKey::CumulativeYps, &val);
+}
+
+/// Monotonically-increasing distribution epoch counter.
+pub fn get_distribution_epoch(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::DistributionEpoch).unwrap_or(0)
+}
+
+pub fn set_distribution_epoch(env: &Env, epoch: u64) {
+    env.storage().instance().set(&DataKey::DistributionEpoch, &epoch);
+}
+
+// ---------------------------------------------------------------------------
+// Per-user yield checkpoint helpers (persistent storage)
+// ---------------------------------------------------------------------------
+
+/// The CumulativeYps value at the time the user last collected or deposited.
+pub fn get_user_checkpoint(env: &Env, addr: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserCheckpoint(addr.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_user_checkpoint(env: &Env, addr: &Address, val: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserCheckpoint(addr.clone()), &val);
+}
+
+/// Yield earned but not yet claimed by `addr`.
+pub fn get_user_pending_yield(env: &Env, addr: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserPendingYield(addr.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_user_pending_yield(env: &Env, addr: &Address, val: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserPendingYield(addr.clone()), &val);
 }

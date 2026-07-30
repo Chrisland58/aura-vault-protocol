@@ -68,4 +68,12 @@ pub enum VaultError {
     NotApproved            = 14,
     /// Governance: signer has already cast a vote on this proposal
     AlreadyVoted           = 15,
+    /// Deposit exceeds the vault's TVL cap
+    TvlCapExceeded         = 16,
+    /// Harvest attempted before the harvest cooldown period has elapsed
+    HarvestCooldown        = 17,
+    /// Yield amount too small to produce a non-zero delta_yps
+    YieldTooSmall          = 18,
+    /// Distribution accuracy check failed: distributed amount deviates more than 0.01%
+    DistributionAccuracyError = 19,
 }
