@@ -24,6 +24,7 @@ import portfolioRouter from "./portfolio.js";
 import { emailRouter } from "./routes/emailRoutes.js";
 import { gasRouter } from "./routes/gasRoutes.js";
 import { yieldRouter } from "./routes/yieldRoutes.js";
+import { queueRouter } from "./routes/queueRoutes.js";
 import { startWorker, stopWorker } from "./queue.js";
 import { queueRouter } from "./routes/queueRoutes.js";
 import { analyticsRouter } from "./routes/analyticsRoutes.js";
