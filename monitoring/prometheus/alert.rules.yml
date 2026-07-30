@@ -273,3 +273,41 @@ groups:
             were processed. Some funds remain in lending protocols. Re-run
             emergencyWithdrawAll() with higher gas or process remaining tokens
             individually. Instance: {{ $labels.instance }}.
+
+  # ── DB Query Performance — Issue #324 ────────────────────────────────────
+  - name: aura-vault-db-performance
+    rules:
+      - alert: SlowDatabaseQueryP99
+        expr: >
+          histogram_quantile(0.99,
+            rate(db_query_duration_seconds_bucket[5m])
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "p99 DB query time exceeds 500ms"
+          description: >
+            The 99th-percentile database query duration has exceeded 500 ms for
+            5 consecutive minutes (current: {{ $value | humanizeDuration }}).
+            Query type: {{ $labels.query_type }}.
+            Check the slow query log at /api/v1/vault/metrics/db/slow-log.
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/SlowDatabaseQuery"
+
+      - alert: SlowDatabaseQueryP50
+        expr: >
+          histogram_quantile(0.50,
+            rate(db_query_duration_seconds_bucket[5m])
+          ) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Median DB query time exceeds 100ms"
+          description: >
+            The median (p50) database query duration has exceeded 100 ms for
+            10 consecutive minutes (current: {{ $value | humanizeDuration }}).
+            This may indicate missing indexes or N+1 query patterns.
+          runbook_url: "https://github.com/soterika/aura-vault-protocol/wiki/runbooks/SlowDatabaseQuery"
