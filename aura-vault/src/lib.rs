@@ -41,6 +41,8 @@ pub use errors::VaultError;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
+mod invariants;
+#[cfg(test)]
 mod security_test;
 #[cfg(test)]
 mod proptest_strategies;
@@ -58,6 +60,8 @@ mod event_snapshots;
 mod seed_ratio_test;
 #[cfg(test)]
 mod cei_fuzz_test;
+#[cfg(test)]
+mod lifecycle_test;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
