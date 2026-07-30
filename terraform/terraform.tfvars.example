@@ -34,7 +34,10 @@ db_instance_class   = "db.t3.medium"
 db_allocated_storage = 20
 db_name             = "auravault"
 db_username         = "admin"
-db_password         = "CHANGE_THIS_PASSWORD"
+
+# Optional: Lambda ARN that implements Secrets Manager rotation for application
+# API keys. Database/app rotation resources are enabled when this is set.
+secrets_rotation_lambda_arn = ""
 
 # SSH Key (generate with: ssh-keygen -t rsa -f ~/.ssh/aura-vault-key)
 # Then paste the public key content here

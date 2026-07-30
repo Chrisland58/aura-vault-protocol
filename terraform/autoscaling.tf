@@ -13,14 +13,20 @@ resource "aws_launch_template" "backend" {
   monitoring {
     enabled = true
   }
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.backend.name
+  }
   
   user_data = base64encode(templatefile("${path.module}/user-data.sh", {
     db_endpoint     = aws_db_instance.main.endpoint
     db_name         = var.db_name
     db_username     = var.db_username
-    db_password     = var.db_password
+    db_secret_id    = aws_secretsmanager_secret.db_master.arn
+    app_secret_id   = aws_secretsmanager_secret.app.arn
     environment     = var.environment
     project_name    = var.project_name
+    aws_region      = var.aws_region
   }))
   
   tag_specifications {

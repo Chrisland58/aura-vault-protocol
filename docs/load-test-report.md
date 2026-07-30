@@ -1,7 +1,7 @@
 # Load Testing — Performance Benchmarks
 
-**Issue**: #55  
-**Date**: 2026-06-25  
+**Issue**: #20  
+**Date**: 2026-06-27  
 **Test suite**: `ui/src/tests/load.test.ts`  
 **Runner**: Vitest (Node/V8)
 
