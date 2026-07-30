@@ -19,6 +19,11 @@ const VAULT_ERROR_MAP: Record<number, Pick<UserError, "message" | "action" | "re
   6: { message: "A calculation error occurred.", action: "Try a smaller amount.", retryable: false },
   7: { message: "One of the addresses is invalid.", action: "Check the address and try again.", retryable: false },
   8: { message: "There are no shares in the vault yet.", action: "Make a deposit first.", retryable: false },
+  // Codes 9–12 added for Issue #65
+  9: { message: "You don't have permission to perform this action.", action: "Connect the admin wallet and try again.", retryable: false },
+  10: { message: "The vault cannot be upgraded right now due to a storage mismatch.", action: "Contact the vault administrator.", retryable: false },
+  11: { message: "The vault is temporarily paused.", action: "Check the protocol status page and try again later.", retryable: true },
+  12: { message: "Unexpected token balance detected. The transaction was blocked for your protection.", action: "Wait a moment and try again. If the problem persists, contact support.", retryable: true },
 };
 
 function extractVaultCode(err: unknown): number | null {
@@ -86,7 +91,29 @@ export function translateError(err: unknown): UserError {
     };
   }
 
-  // 6. Fallback — never expose raw technical details
+  // 6. Transaction rejected / cancelled by the user in their wallet
+  if (msg.includes("user rejected") || msg.includes("user denied") || msg.includes("cancelled")) {
+    return {
+      message: "Transaction cancelled.",
+      action: "You rejected the transaction in your wallet. Try again when you're ready.",
+      severity: "warning",
+      retryable: true,
+      _raw: err,
+    };
+  }
+
+  // 7. Transaction simulation or submission failure
+  if (msg.includes("transaction") && (msg.includes("fail") || msg.includes("revert") || msg.includes("error"))) {
+    return {
+      message: "The transaction could not be completed.",
+      action: "Check your wallet balance and try again. If it keeps failing, contact support.",
+      severity: "error",
+      retryable: true,
+      _raw: err,
+    };
+  }
+
+  // 8. Fallback — never expose raw technical details
   return {
     message: "Something went wrong.",
     action: "Please try again. If the problem persists, contact support.",

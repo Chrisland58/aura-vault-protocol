@@ -1,102 +1,189 @@
-import type { HTMLAttributes, ReactNode, CSSProperties } from "react";
+import type { HTMLAttributes, ReactNode } from "react";
 
-/* ── Stack ─────────────────────────────────────────────────────────
-   One-dimensional flex layout with uniform gap.
-──────────────────────────────────────────────────────────────────── */
-export type StackDirection = "row" | "column";
-export type StackAlign     = "start" | "center" | "end" | "stretch" | "baseline";
-export type StackJustify   = "start" | "center" | "end" | "between" | "around" | "evenly";
-export type SpacingToken   = 0|1|2|3|4|5|6|8|10|12|16|20;
+/* ── Stack ────────────────────────────────────────────────────────── */
+export type StackDirection = "horizontal" | "vertical";
+export type StackGap = "xs" | "sm" | "md" | "lg" | "xl";
 
 export interface StackProps extends HTMLAttributes<HTMLDivElement> {
   direction?: StackDirection;
-  gap?: SpacingToken;
-  align?: StackAlign;
-  justify?: StackJustify;
+  gap?: StackGap;
+  alignItems?: string;
+  justifyContent?: string;
   wrap?: boolean;
 }
 
-const alignMap: Record<StackAlign, string> = {
-  start: "flex-start", center: "center", end: "flex-end",
-  stretch: "stretch", baseline: "baseline",
-};
-const justifyMap: Record<StackJustify, string> = {
-  start: "flex-start", center: "center", end: "flex-end",
-  between: "space-between", around: "space-around", evenly: "space-evenly",
-};
-
-/** Flexbox-based one-dimensional layout primitive. */
+/** Flexbox container for stacking items with consistent spacing. */
 export function Stack({
-  direction = "column",
-  gap = 4,
-  align = "stretch",
-  justify = "start",
+  direction = "vertical",
+  gap = "md",
+  alignItems,
+  justifyContent,
   wrap = false,
+  className = "",
   style,
-  children,
   ...props
 }: StackProps) {
-  const inlineStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: direction,
-    gap: `var(--sp-${gap})`,
-    alignItems: alignMap[align],
-    justifyContent: justifyMap[justify],
-    flexWrap: wrap ? "wrap" : "nowrap",
-    ...style,
-  };
-  return <div style={inlineStyle} {...props}>{children}</div>;
+  const isHorizontal = direction === "horizontal";
+  const gapValue = `var(--space-${gap === "xs" ? 1 : gap === "sm" ? 2 : gap === "md" ? 4 : gap === "lg" ? 6 : 8})`;
+
+  return (
+    <div
+      className={`ds-stack ${className}`}
+      style={{
+        display: "flex",
+        flexDirection: isHorizontal ? "row" : "column",
+        gap: gapValue,
+        alignItems,
+        justifyContent,
+        flexWrap: wrap ? "wrap" : "nowrap",
+        ...style,
+      }}
+      {...props}
+    />
+  );
 }
 
-/* ── Grid ──────────────────────────────────────────────────────────
-   CSS Grid layout with responsive column support.
-──────────────────────────────────────────────────────────────────── */
+/* ── Grid ─────────────────────────────────────────────────────────── */
+export type GridGap = "sm" | "md" | "lg" | "xl";
+
 export interface GridProps extends HTMLAttributes<HTMLDivElement> {
-  cols?: number | string;   // number = repeat(n, 1fr), string = custom template
-  gap?: SpacingToken;
-  rowGap?: SpacingToken;
-  colGap?: SpacingToken;
+  columns?: number | number[];
+  gap?: GridGap;
+  autoRows?: string;
 }
 
-/** CSS grid layout primitive. */
-export function Grid({ cols = 2, gap, rowGap, colGap, style, children, ...props }: GridProps) {
-  const inlineStyle: CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: typeof cols === "number" ? `repeat(${cols}, 1fr)` : cols,
-    gap:       gap    !== undefined ? `var(--sp-${gap})`    : undefined,
-    rowGap:    rowGap !== undefined ? `var(--sp-${rowGap})` : undefined,
-    columnGap: colGap !== undefined ? `var(--sp-${colGap})` : undefined,
-    ...style,
-  };
-  return <div style={inlineStyle} {...props}>{children}</div>;
+/** CSS Grid container with responsive column support. */
+export function Grid({
+  columns = 1,
+  gap = "md",
+  autoRows,
+  className = "",
+  style,
+  ...props
+}: GridProps) {
+  const gapValue = `var(--space-${gap === "sm" ? 2 : gap === "md" ? 4 : gap === "lg" ? 6 : 8})`;
+  const columnsValue = Array.isArray(columns)
+    ? `repeat(auto-fit, minmax(${100 / Math.max(...columns)}%, 1fr))`
+    : `repeat(${columns}, 1fr)`;
+
+  return (
+    <div
+      className={`ds-grid ${className}`}
+      style={{
+        display: "grid",
+        gridTemplateColumns: columnsValue,
+        gap: gapValue,
+        gridAutoRows: autoRows,
+        ...style,
+      }}
+      {...props}
+    />
+  );
 }
 
-/* ── Container ─────────────────────────────────────────────────────
-   Max-width centred page container.
-──────────────────────────────────────────────────────────────────── */
-export type ContainerSize = "sm" | "md" | "lg" | "xl" | "full";
+/* ── Flex ─────────────────────────────────────────────────────────── */
+export interface FlexProps extends HTMLAttributes<HTMLDivElement> {
+  direction?: "row" | "column";
+  justifyContent?: string;
+  alignItems?: string;
+  gap?: string;
+  wrap?: boolean;
+}
 
-const maxWidths: Record<ContainerSize, string> = {
-  sm:   "640px",
-  md:   "768px",
-  lg:   "1024px",
-  xl:   "1280px",
-  full: "100%",
-};
+/** Flex container for layout control. */
+export function Flex({
+  direction = "row",
+  justifyContent,
+  alignItems,
+  gap,
+  wrap,
+  className = "",
+  style,
+  ...props
+}: FlexProps) {
+  return (
+    <div
+      className={`ds-flex ${className}`}
+      style={{
+        display: "flex",
+        flexDirection: direction,
+        justifyContent,
+        alignItems,
+        gap,
+        flexWrap: wrap ? "wrap" : "nowrap",
+        ...style,
+      }}
+      {...props}
+    />
+  );
+}
+
+/* ── Container ────────────────────────────────────────────────────── */
+export type ContainerSize = "sm" | "md" | "lg" | "xl";
 
 export interface ContainerProps extends HTMLAttributes<HTMLDivElement> {
   size?: ContainerSize;
-  padded?: boolean;
+  padding?: boolean;
+  centered?: boolean;
 }
 
-/** Max-width centred container with optional horizontal padding. */
-export function Container({ size = "lg", padded = true, style, children, ...props }: ContainerProps) {
-  const inlineStyle: CSSProperties = {
-    maxWidth: maxWidths[size],
-    width: "100%",
-    marginInline: "auto",
-    paddingInline: padded ? "var(--sp-4)" : undefined,
-    ...style,
+/** Constrained width container for responsive layouts. */
+export function Container({
+  size = "lg",
+  padding = false,
+  centered = true,
+  className = "",
+  style,
+  ...props
+}: ContainerProps) {
+  const maxWidths: Record<ContainerSize, string> = {
+    sm: "640px",
+    md: "768px",
+    lg: "1024px",
+    xl: "1280px",
   };
-  return <div style={inlineStyle} {...props}>{children}</div>;
+
+  return (
+    <div
+      className={`ds-container ${className}`}
+      style={{
+        maxWidth: maxWidths[size],
+        margin: centered ? "0 auto" : "0",
+        padding: padding ? "var(--space-4)" : "0",
+        width: "100%",
+        ...style,
+      }}
+      {...props}
+    />
+  );
+}
+
+/* ── Spacer ───────────────────────────────────────────────────────── */
+export type SpacerSize = "xs" | "sm" | "md" | "lg" | "xl";
+
+export interface SpacerProps {
+  size?: SpacerSize;
+  horizontal?: boolean;
+}
+
+/** Invisible spacing element. */
+export function Spacer({ size = "md", horizontal = false }: SpacerProps) {
+  const sizes: Record<SpacerSize, string> = {
+    xs: "var(--space-1)",
+    sm: "var(--space-2)",
+    md: "var(--space-4)",
+    lg: "var(--space-6)",
+    xl: "var(--space-8)",
+  };
+
+  return (
+    <div
+      className="ds-spacer"
+      style={
+        horizontal
+          ? { width: sizes[size], height: 0 }
+          : { height: sizes[size], width: 0 }
+      }
+    />
+  );
 }
