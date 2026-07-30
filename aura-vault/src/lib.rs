@@ -41,6 +41,8 @@ pub use errors::VaultError;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
+mod invariants;
+#[cfg(test)]
 mod security_test;
 #[cfg(test)]
 mod proptest_strategies;
@@ -113,6 +115,26 @@ fn bump_user_yield(env: &Env, addr: &Address) {
 #[contract]
 pub struct AuraVault;
 
+/// Fixed-point precision scalar for yield-per-share accumulator.
+/// Using 1e12 (12 decimal places) gives sub-stroop precision for
+/// vaults with up to 1e12 shares outstanding.
+const YIELD_PRECISION: i128 = 1_000_000_000_000; // 1e12
+
+/// Bump TTL for both the user's share balance and their yield checkpoint/pending entries.
+fn bump_user_yield(env: &Env, addr: &Address) {
+    use storage::{PERSISTENT_BUMP_AMOUNT, PERSISTENT_LIFETIME_THRESHOLD};
+    env.storage().persistent().extend_ttl(
+        &storage::DataKey::UserCheckpoint(addr.clone()),
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
+    env.storage().persistent().extend_ttl(
+        &storage::DataKey::UserPendingYield(addr.clone()),
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
+}
+
 #[contractimpl]
 impl AuraVault {
     // -----------------------------------------------------------------------
@@ -150,6 +172,10 @@ impl AuraVault {
         set_token(&env, &underlying_token);
         set_total_shares(&env, 0);
         set_total_deposited(&env, 0);
+        storage::set_cumulative_yps(&env, 0);
+        storage::set_distribution_epoch(&env, 0);
+        storage::set_user_checkpoint(&env, &admin, 0);
+        storage::set_user_pending_yield(&env, &admin, 0);
         set_version(&env, 1);
         set_layout_version(&env, CURRENT_LAYOUT_VERSION);
         initialize_governance(&env, signers)?;
@@ -266,6 +292,8 @@ impl AuraVault {
             .checked_add(new_shares)
             .ok_or(VaultError::MathOverflow)?;
         set_balance(&env, &caller, new_balance);
+        storage::set_user_checkpoint(&env, &caller, storage::get_cumulative_yps(&env));
+        storage::set_user_pending_yield(&env, &caller, storage::get_user_pending_yield(&env, &caller));
         let new_total_shares = total_shares
             .checked_add(new_shares)
             .ok_or(VaultError::MathOverflow)?;
@@ -395,6 +423,8 @@ impl AuraVault {
             .checked_sub(shares)
             .ok_or(VaultError::MathOverflow)?;
         set_total_shares(&env, new_total_shares);
+        storage::set_user_checkpoint(&env, &caller, storage::get_cumulative_yps(&env));
+        storage::set_user_pending_yield(&env, &caller, storage::get_user_pending_yield(&env, &caller));
         let new_total_deposited = total_deposited
             .checked_sub(redeem_amount)
             .ok_or(VaultError::MathOverflow)?;
@@ -1786,7 +1816,7 @@ impl AuraVault {
         name: Symbol,
         value: i128,
     ) -> Result<u64, VaultError> {
-        create_proposal(&env, proposer, ProposalType::UpdateParameter { name, value })
+        create_proposal(&env, proposer, ProposalType::UpdateParameter(name, value))
     }
 
     /// Vote to approve or reject an open governance proposal.
