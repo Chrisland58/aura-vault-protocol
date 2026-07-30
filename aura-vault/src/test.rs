@@ -1361,7 +1361,9 @@ mod sep41_transfer_allowance {
             .address();
         let vault_addr = env.register_contract(None, AuraVault);
         let vault = AuraVaultClient::new(&env, &vault_addr);
-        vault.initialize(&admin, &token_addr);
+        let signers: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        vault.initialize(&admin, &token_addr, &signers);
+        vault.set_fees(&admin, &0_u32, &0_u32);
         (env, vault, vault_addr, token_addr, admin)
     }
 
@@ -1597,7 +1599,7 @@ mod sep41_transfer_allowance {
         assert!(shares > 0, "alice should have shares after deposit");
 
         // --- Pause the vault ---
-        vault.pause();
+        vault.pause(&admin);
         assert!(vault.is_paused(), "vault must be paused");
 
         // Record balances *after* pause, *before* any blocked operations.
@@ -1645,7 +1647,7 @@ mod sep41_transfer_allowance {
         );
 
         // --- Unpause and verify operations resume ---
-        vault.unpause();
+        vault.unpause(&admin);
         assert!(!vault.is_paused(), "vault must be unpaused");
 
         // Deposit must succeed after unpause.

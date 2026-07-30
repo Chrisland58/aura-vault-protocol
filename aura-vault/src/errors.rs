@@ -68,4 +68,20 @@ pub enum VaultError {
     NotApproved            = 14,
     /// Governance: signer has already cast a vote on this proposal
     AlreadyVoted           = 15,
+    /// Deposit would exceed the configured TVL cap
+    TvlCapExceeded         = 16,
+    /// Yield amount is too small to distribute (rounds to zero per-share)
+    YieldTooSmall          = 17,
+    /// Yield distribution accuracy check failed (>0.01% rounding error)
+    DistributionAccuracyError = 18,
+    /// Harvest attempted before the configured cooldown period has elapsed
+    HarvestCooldown        = 19,
+    /// Withdrawal is queued and will be processed after the unbonding period
+    WithdrawalQueued       = 20,
+    /// Withdrawal queue entry does not exist or has already been processed
+    QueueEntryNotFound     = 21,
+    /// Withdrawal queue entry is still within the unbonding period
+    QueueUnbondingPending  = 22,
+    /// Withdrawal fee rate exceeds the allowed maximum
+    InvalidWithdrawalFee   = 23,
 }
