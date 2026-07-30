@@ -1361,8 +1361,9 @@ mod sep41_transfer_allowance {
             .address();
         let vault_addr = env.register_contract(None, AuraVault);
         let vault = AuraVaultClient::new(&env, &vault_addr);
-        let signers: Vec<Address> = Vec::new(&env);
+        let signers: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
         vault.initialize(&admin, &token_addr, &signers);
+        vault.set_fees(&admin, &0_u32, &0_u32);
         (env, vault, vault_addr, token_addr, admin)
     }
 

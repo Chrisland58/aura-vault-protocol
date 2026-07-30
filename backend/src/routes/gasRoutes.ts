@@ -65,3 +65,17 @@ gasRouter.get("/history", async (req: Request, res: Response): Promise<void> => 
     res.status(500).json({ error: "Unable to load gas history" });
   }
 });
+
+/**
+ * GET /api/v1/gas/metrics
+ * Returns service performance metrics (cache hit rate, accuracy tracking).
+ */
+gasRouter.get("/metrics", async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const metrics = gasService.getMetrics();
+    res.json(metrics);
+  } catch (err) {
+    console.error("[gas-metrics]", err);
+    res.status(500).json({ error: "Unable to load metrics" });
+  }
+});

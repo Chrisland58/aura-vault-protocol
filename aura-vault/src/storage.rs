@@ -24,14 +24,31 @@ pub enum DataKey {
     LastHarvestTime,
     /// Minimum seconds between harvests (0 = no cooldown). Issue #471.
     HarvestCooldownSecs,
-    /// Global cumulative yield-per-share accumulator (scaled by YIELD_PRECISION).
+    // -----------------------------------------------------------------------
+    // Yield-distribution per-share accumulator (Issue #YD)
+    // -----------------------------------------------------------------------
+    /// Global cumulative yield-per-share (YPS) accumulator (scaled by YIELD_PRECISION).
     CumulativeYps,
-    /// Monotonically-increasing epoch counter, incremented on each distribution.
-    DistributionEpoch,
-    /// Per-user checkpoint: the value of CumulativeYps when user last collected / deposited.
+    /// Per-user YPS checkpoint: the value of CumulativeYps at the user's last
+    /// collect_pending_yield or deposit call.
     UserCheckpoint(Address),
-    /// Per-user pending yield: yield earned but not yet claimed.
+    /// Stored (unsettled) pending yield tokens for a user, in underlying units.
     UserPendingYield(Address),
+    /// Monotonically increasing epoch counter; bumped on every distribution.
+    DistributionEpoch,
+    // -----------------------------------------------------------------------
+    // Withdrawal queue (Issue #WQ)
+    // -----------------------------------------------------------------------
+    /// Minimum underlying-token amount that triggers queue instead of instant withdrawal.
+    WithdrawalQueueThreshold,
+    /// Minimum seconds a queued withdrawal must wait before it can be claimed.
+    WithdrawalUnbondingSecs,
+    /// Per-user withdrawal fee in basis points (0 = no fee, max 500 = 5%).
+    WithdrawalFeeBps,
+    /// Next sequential withdrawal queue ID.
+    WithdrawalNextId,
+    /// Individual withdrawal queue entry keyed by queue ID.
+    WithdrawalEntry(u64),
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -249,11 +266,10 @@ pub fn set_harvest_cooldown_secs(env: &Env, secs: u64) {
 }
 
 // ---------------------------------------------------------------------------
-// Yield-distribution accumulator helpers (instance storage)
+// Yield-distribution accumulator helpers (Issue #YD)
 // ---------------------------------------------------------------------------
 
-/// Global cumulative yield-per-share (YPS) accumulator.
-/// Scaled by YIELD_PRECISION (1e12) to preserve sub-stroop precision.
+/// Global cumulative yield-per-share (YPS), scaled by YIELD_PRECISION.
 pub fn get_cumulative_yps(env: &Env) -> i128 {
     env.storage().instance().get(&DataKey::CumulativeYps).unwrap_or(0)
 }
@@ -262,20 +278,7 @@ pub fn set_cumulative_yps(env: &Env, val: i128) {
     env.storage().instance().set(&DataKey::CumulativeYps, &val);
 }
 
-/// Monotonically-increasing distribution epoch counter.
-pub fn get_distribution_epoch(env: &Env) -> u64 {
-    env.storage().instance().get(&DataKey::DistributionEpoch).unwrap_or(0)
-}
-
-pub fn set_distribution_epoch(env: &Env, epoch: u64) {
-    env.storage().instance().set(&DataKey::DistributionEpoch, &epoch);
-}
-
-// ---------------------------------------------------------------------------
-// Per-user yield checkpoint helpers (persistent storage)
-// ---------------------------------------------------------------------------
-
-/// The CumulativeYps value at the time the user last collected or deposited.
+/// Per-user YPS checkpoint (persistent storage — one entry per user address).
 pub fn get_user_checkpoint(env: &Env, addr: &Address) -> i128 {
     env.storage()
         .persistent()
@@ -289,7 +292,7 @@ pub fn set_user_checkpoint(env: &Env, addr: &Address, val: i128) {
         .set(&DataKey::UserCheckpoint(addr.clone()), &val);
 }
 
-/// Yield earned but not yet claimed by `addr`.
+/// Per-user stored pending yield tokens, in underlying units.
 pub fn get_user_pending_yield(env: &Env, addr: &Address) -> i128 {
     env.storage()
         .persistent()
@@ -301,4 +304,104 @@ pub fn set_user_pending_yield(env: &Env, addr: &Address, val: i128) {
     env.storage()
         .persistent()
         .set(&DataKey::UserPendingYield(addr.clone()), &val);
+}
+
+/// Global distribution epoch counter.
+pub fn get_distribution_epoch(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::DistributionEpoch).unwrap_or(0)
+}
+
+pub fn set_distribution_epoch(env: &Env, epoch: u64) {
+    env.storage().instance().set(&DataKey::DistributionEpoch, &epoch);
+}
+
+/// TTL bump for per-user yield checkpoint and pending entries.
+pub fn bump_user_yield_ttl(env: &Env, addr: &Address) {
+    // Bump both entries if they exist; silently skip if not yet set.
+    let ck = DataKey::UserCheckpoint(addr.clone());
+    if env.storage().persistent().has(&ck) {
+        env.storage().persistent().extend_ttl(&ck, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
+    let py = DataKey::UserPendingYield(addr.clone());
+    if env.storage().persistent().has(&py) {
+        env.storage().persistent().extend_ttl(&py, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Withdrawal queue helpers (Issue #WQ)
+// ---------------------------------------------------------------------------
+
+/// Minimum underlying-token amount that routes a withdrawal through the queue.
+/// 0 means all withdrawals are instant (queue disabled).
+pub fn get_withdrawal_queue_threshold(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::WithdrawalQueueThreshold).unwrap_or(0)
+}
+
+pub fn set_withdrawal_queue_threshold(env: &Env, threshold: i128) {
+    env.storage().instance().set(&DataKey::WithdrawalQueueThreshold, &threshold);
+}
+
+/// Seconds a queued withdrawal must wait before it can be claimed.
+/// Default 0 (instant once queued — admin sets unbonding period).
+pub fn get_withdrawal_unbonding_secs(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::WithdrawalUnbondingSecs).unwrap_or(0)
+}
+
+pub fn set_withdrawal_unbonding_secs(env: &Env, secs: u64) {
+    env.storage().instance().set(&DataKey::WithdrawalUnbondingSecs, &secs);
+}
+
+/// Withdrawal fee in basis points (0–500). Applied on claim.
+pub fn get_withdrawal_fee_bps(env: &Env) -> u32 {
+    env.storage().instance().get(&DataKey::WithdrawalFeeBps).unwrap_or(0)
+}
+
+pub fn set_withdrawal_fee_bps(env: &Env, bps: u32) {
+    env.storage().instance().set(&DataKey::WithdrawalFeeBps, &bps);
+}
+
+/// Monotonically-increasing withdrawal queue ID.  The next entry will use
+/// this value, then it is incremented.
+pub fn get_withdrawal_next_id(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::WithdrawalNextId).unwrap_or(1)
+}
+
+pub fn set_withdrawal_next_id(env: &Env, id: u64) {
+    env.storage().instance().set(&DataKey::WithdrawalNextId, &id);
+}
+
+/// Retrieve a withdrawal queue entry.
+pub fn get_withdrawal_entry(env: &Env, id: u64) -> Option<WithdrawalEntry> {
+    env.storage().persistent().get(&DataKey::WithdrawalEntry(id))
+}
+
+/// Store a withdrawal queue entry.
+pub fn set_withdrawal_entry(env: &Env, id: u64, entry: &WithdrawalEntry) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::WithdrawalEntry(id), entry);
+    let key = DataKey::WithdrawalEntry(id);
+    env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+}
+
+/// Remove a withdrawal queue entry (after claim).
+pub fn remove_withdrawal_entry(env: &Env, id: u64) {
+    env.storage().persistent().remove(&DataKey::WithdrawalEntry(id));
+}
+
+/// A single entry in the withdrawal queue.
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug)]
+pub struct WithdrawalEntry {
+    /// Address that queued the withdrawal.
+    pub owner: Address,
+    /// Number of vault shares burned when this entry was created.
+    pub shares: i128,
+    /// Underlying token amount to be redeemed (computed at queue time).
+    pub redeem_amount: i128,
+    /// Ledger timestamp after which the entry may be claimed.
+    pub claimable_after: u64,
+    /// Whether this entry has already been claimed.
+    pub claimed: bool,
 }

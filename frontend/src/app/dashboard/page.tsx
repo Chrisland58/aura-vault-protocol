@@ -1,6 +1,7 @@
 "use client";
 
 import { DashboardGrid } from "@/components/dashboard/DashboardGrid";
+import PerformanceCharts from "@/components/PerformanceCharts";
 
 /**
  * /dashboard — main vault overview page.
@@ -21,5 +22,10 @@ import { DashboardGrid } from "@/components/dashboard/DashboardGrid";
  * Mobile collapses all cards to a single column.
  */
 export default function DashboardPage() {
-  return <DashboardGrid />;
+  return (
+    <div className="space-y-8">
+      <DashboardGrid />
+      <PerformanceCharts />
+    </div>
+  );
 }
