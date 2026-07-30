@@ -59,6 +59,8 @@ mod seed_ratio_test;
 #[cfg(test)]
 mod cei_fuzz_test;
 
+mod invariants;
+
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
 use storage::{
@@ -69,11 +71,44 @@ use storage::{
     get_tvl_cap, set_tvl_cap,
     get_last_harvest_time, set_last_harvest_time,
     get_harvest_cooldown_secs, set_harvest_cooldown_secs,
+    bump_user_yield_ttl,
+    WithdrawalEntry,
+    get_withdrawal_queue_threshold, set_withdrawal_queue_threshold,
+    get_withdrawal_unbonding_secs, set_withdrawal_unbonding_secs,
+    get_withdrawal_fee_bps, set_withdrawal_fee_bps,
+    get_withdrawal_next_id, set_withdrawal_next_id,
+    get_withdrawal_entry, set_withdrawal_entry, remove_withdrawal_entry,
 };
 use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
     get_proposal_status, ProposalStatus, ProposalType,
 };
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Scaling factor for the yield-per-share (YPS) accumulator.
+///
+/// Using 1_000_000_000_000 (1e12) gives sub-stroop precision for any vault
+/// with ≤ 1e12 total shares outstanding.  For context, 1e12 stroops is
+/// 100_000 XLM — more than any realistic single-vault TVL at today's prices.
+pub const YIELD_PRECISION: i128 = 1_000_000_000_000;
+
+/// Maximum withdrawal fee in basis points (5%).
+pub const MAX_WITHDRAWAL_FEE_BPS: u32 = 500;
+
+// ---------------------------------------------------------------------------
+// Module-level helpers (non-contract functions)
+// ---------------------------------------------------------------------------
+
+/// Extend TTL of per-user yield accounting entries (checkpoint + pending).
+///
+/// Called by `collect_pending_yield` and `distribute_yield` to keep user
+/// persistent storage alive for the standard 30-day window.
+fn bump_user_yield(env: &Env, addr: &Address) {
+    storage::bump_user_yield_ttl(env, addr);
+}
 
 #[contract]
 pub struct AuraVault;
@@ -270,6 +305,20 @@ impl AuraVault {
     /// `(event_name, caller, shares)` and data
     /// `(redeem_amount, new_total_shares, new_total_deposited)`.
     ///
+    /// ## Withdrawal queue
+    ///
+    /// When a `withdrawal_queue_threshold > 0` is configured by the admin and
+    /// `redeem_amount >= threshold`, the withdrawal is **queued** instead of
+    /// being processed immediately.  In this case:
+    ///
+    /// - Shares are burned immediately (CEI: state written before interaction).
+    /// - An entry is stored in the queue with a `claimable_after` timestamp.
+    /// - The function returns `Err(VaultError::WithdrawalQueued)`.
+    /// - The caller must call `claim_queued_withdrawal(entry_id)` once the
+    ///   unbonding period has elapsed to receive their tokens.
+    /// - The `withdraw_queued` event carries the `entry_id` so callers can
+    ///   look it up later.
+    ///
     /// # Parameters
     ///
     /// - `env` — Soroban execution environment.
@@ -279,7 +328,7 @@ impl AuraVault {
     ///
     /// # Returns
     ///
-    /// The number of underlying tokens transferred to `caller`.
+    /// The number of underlying tokens transferred to `caller` (instant path).
     ///
     /// # Errors
     ///
@@ -290,6 +339,8 @@ impl AuraVault {
     /// - [`VaultError::InsufficientUnderlying`] — vault cannot cover the redemption.
     /// - [`VaultError::BalanceMismatch`] — flash-loan guard tripped.
     /// - [`VaultError::MathOverflow`] — arithmetic overflow.
+    /// - [`VaultError::WithdrawalQueued`] — withdrawal is large and has been
+    ///   queued; call `claim_queued_withdrawal` after the unbonding period.
     pub fn withdraw(env: Env, caller: Address, shares: i128) -> Result<i128, VaultError> {
         caller.require_auth();
 
@@ -337,7 +388,7 @@ impl AuraVault {
             return Err(VaultError::InsufficientUnderlying);
         }
 
-        // CEI — Effects first: burn shares before token transfer
+        // CEI — Effects: burn shares before any token transfer
         let new_balance = user_balance - shares;
         set_balance(&env, &caller, new_balance);
         let new_total_shares = total_shares
@@ -349,7 +400,47 @@ impl AuraVault {
             .ok_or(VaultError::MathOverflow)?;
         set_total_deposited(&env, new_total_deposited);
 
-        // Interaction: send tokens to caller after state is settled
+        bump_persistent(&env, &caller);
+        bump_instance(&env);
+
+        // -----------------------------------------------------------------------
+        // Withdrawal queue: if the redemption amount meets or exceeds the
+        // configured threshold, queue the withdrawal instead of sending tokens.
+        //
+        // Shares are already burned above (CEI).  We store an entry and return
+        // WithdrawalQueued so the caller knows to call claim_queued_withdrawal.
+        // -----------------------------------------------------------------------
+        let queue_threshold = get_withdrawal_queue_threshold(&env);
+        if queue_threshold > 0 && redeem_amount >= queue_threshold {
+            let unbonding_secs = get_withdrawal_unbonding_secs(&env);
+            let claimable_after = env.ledger().timestamp().saturating_add(unbonding_secs);
+
+            let entry_id = get_withdrawal_next_id(&env);
+            set_withdrawal_next_id(&env, entry_id + 1);
+
+            let entry = WithdrawalEntry {
+                owner: caller.clone(),
+                shares,
+                redeem_amount,
+                claimable_after,
+                claimed: false,
+            };
+            set_withdrawal_entry(&env, entry_id, &entry);
+
+            // Event: topics = (event_name, caller, entry_id) — indexed.
+            env.events().publish(
+                (Symbol::new(&env, "withdraw_queued"), caller.clone(), entry_id),
+                (shares, redeem_amount, claimable_after, new_total_shares, new_total_deposited),
+            );
+
+            return Err(VaultError::WithdrawalQueued);
+        }
+
+        // -----------------------------------------------------------------------
+        // Instant withdrawal path
+        // -----------------------------------------------------------------------
+
+        // Interaction: send tokens to caller after all state is settled
         token.transfer(&env.current_contract_address(), &caller, &redeem_amount);
 
         // Event: topics = (event_name, caller, shares) — indexed for efficient filtering.
@@ -358,14 +449,252 @@ impl AuraVault {
             (redeem_amount, new_total_shares, new_total_deposited),
         );
 
-        bump_persistent(&env, &caller);
-        bump_instance(&env);
-
         Ok(redeem_amount)
     }
 
     // -----------------------------------------------------------------------
-    // harvest — permissionless keeper entry point (underlying token)
+    // Withdrawal queue configuration — admin-only
+    //
+    // When a withdrawal request exceeds `withdrawal_queue_threshold`, the
+    // vault routes it through the queue instead of processing it immediately.
+    // This prevents flash-loan attacks on large redemptions and gives the
+    // vault time to source liquidity from yield strategies.
+    //
+    // Queue lifecycle:
+    //   1. caller calls `withdraw()` with shares whose redemption value
+    //      exceeds the threshold.
+    //   2. `withdraw()` burns shares, records the entry, and returns
+    //      VaultError::WithdrawalQueued (the entry ID is in the event).
+    //   3. After `unbonding_secs` have elapsed, the caller calls
+    //      `claim_queued_withdrawal(id)` to collect their tokens.
+    //   4. A `withdrawal_fee_bps` may be charged at claim time; the fee is
+    //      added to `total_fee_collected` (goes to the treasury).
+    // -----------------------------------------------------------------------
+
+    /// Admin: set the threshold above which withdrawals are queued.
+    ///
+    /// `threshold = 0` disables the queue (all withdrawals are instant).
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    pub fn set_withdrawal_queue_threshold(
+        env: Env,
+        admin: Address,
+        threshold: i128,
+    ) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_withdrawal_queue_threshold(&env, threshold);
+        bump_instance(&env);
+        env.events().publish(
+            (Symbol::new(&env, "queue_threshold_set"), admin),
+            (threshold,),
+        );
+        Ok(())
+    }
+
+    /// Admin: set the unbonding period for queued withdrawals (seconds).
+    ///
+    /// Queued withdrawals cannot be claimed until `unbonding_secs` have
+    /// elapsed from the time the entry was created.  `0` means claimable
+    /// immediately (still goes through the queue, just no waiting period).
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    pub fn set_withdrawal_unbonding_secs(
+        env: Env,
+        admin: Address,
+        secs: u64,
+    ) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_withdrawal_unbonding_secs(&env, secs);
+        bump_instance(&env);
+        env.events().publish(
+            (Symbol::new(&env, "unbonding_set"), admin),
+            (secs,),
+        );
+        Ok(())
+    }
+
+    /// Admin: set the withdrawal fee in basis points (0–500, i.e., 0–5%).
+    ///
+    /// The fee is deducted from the redeemed amount when a queued withdrawal
+    /// is claimed. The fee is credited to `total_fee_collected` and flows to
+    /// the treasury via `withdraw_fees`.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    /// - [`VaultError::InvalidWithdrawalFee`] — `bps > 500`.
+    pub fn set_withdrawal_fee(
+        env: Env,
+        admin: Address,
+        bps: u32,
+    ) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        if bps > MAX_WITHDRAWAL_FEE_BPS {
+            return Err(VaultError::InvalidWithdrawalFee);
+        }
+        admin.require_auth();
+        set_withdrawal_fee_bps(&env, bps);
+        bump_instance(&env);
+        env.events().publish(
+            (Symbol::new(&env, "withdrawal_fee_set"), admin),
+            (bps,),
+        );
+        Ok(())
+    }
+
+    /// Read the current withdrawal queue threshold (0 = queue disabled).
+    pub fn get_withdrawal_queue_threshold(env: Env) -> i128 {
+        storage::get_withdrawal_queue_threshold(&env)
+    }
+
+    /// Read the current unbonding period in seconds.
+    pub fn get_withdrawal_unbonding_secs(env: Env) -> u64 {
+        storage::get_withdrawal_unbonding_secs(&env)
+    }
+
+    /// Read the current withdrawal fee in basis points.
+    pub fn get_withdrawal_fee_bps(env: Env) -> u32 {
+        storage::get_withdrawal_fee_bps(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // claim_queued_withdrawal
+    //
+    // Process a queued withdrawal entry once its unbonding period has elapsed.
+    //
+    // Steps:
+    //   1. Verify the entry exists and belongs to `caller`.
+    //   2. Verify the unbonding period has elapsed.
+    //   3. Deduct withdrawal fee (if configured).
+    //   4. Transfer net tokens to `caller`.
+    //   5. Remove the entry from storage.
+    //
+    // The shares were already burned in `withdraw()` when the entry was
+    // created, so we only need to transfer tokens here.
+    //
+    // Returns the net token amount transferred to the caller after fees.
+    // -----------------------------------------------------------------------
+    /// Claim a queued withdrawal after the unbonding period has elapsed.
+    ///
+    /// # Parameters
+    ///
+    /// - `env` — Soroban execution environment.
+    /// - `caller` — Must be the owner of the queue entry and authorise this call.
+    /// - `entry_id` — The queue entry ID returned in the `withdraw_queued` event.
+    ///
+    /// # Returns
+    ///
+    /// The net underlying tokens transferred to `caller` after deducting any
+    /// withdrawal fee.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::VaultPaused`] — vault is paused.
+    /// - [`VaultError::QueueEntryNotFound`] — no entry exists for `entry_id`.
+    /// - [`VaultError::InsufficientShares`] — caller is not the owner of the entry.
+    /// - [`VaultError::QueueUnbondingPending`] — unbonding period has not elapsed.
+    pub fn claim_queued_withdrawal(
+        env: Env,
+        caller: Address,
+        entry_id: u64,
+    ) -> Result<i128, VaultError> {
+        caller.require_auth();
+
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        if storage_is_paused(&env) {
+            return Err(VaultError::VaultPaused);
+        }
+
+        // Load the queue entry
+        let entry = get_withdrawal_entry(&env, entry_id)
+            .ok_or(VaultError::QueueEntryNotFound)?;
+
+        // Verify ownership
+        if entry.owner != caller {
+            return Err(VaultError::InsufficientShares);
+        }
+
+        // Check unbonding period
+        let now = env.ledger().timestamp();
+        if now < entry.claimable_after {
+            return Err(VaultError::QueueUnbondingPending);
+        }
+
+        // Calculate fee on the redeem amount
+        let fee_bps = get_withdrawal_fee_bps(&env);
+        let fee_amount: i128 = if fee_bps > 0 {
+            (entry.redeem_amount as i128)
+                .checked_mul(fee_bps as i128)
+                .ok_or(VaultError::MathOverflow)?
+                .checked_div(10_000)
+                .ok_or(VaultError::MathOverflow)?
+        } else {
+            0
+        };
+
+        let net_amount = entry.redeem_amount
+            .checked_sub(fee_amount)
+            .ok_or(VaultError::MathOverflow)?;
+
+        if net_amount <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        // CEI — Effects: remove entry and accrue fee before interaction
+        remove_withdrawal_entry(&env, entry_id);
+        if fee_amount > 0 {
+            let prev_fees = storage::get_total_fee_collected(&env);
+            storage::set_total_fee_collected(
+                &env,
+                prev_fees.checked_add(fee_amount).ok_or(VaultError::MathOverflow)?,
+            );
+        }
+
+        // Interaction: transfer tokens to caller
+        let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
+        let token = token::Client::new(&env, &token_addr);
+        token.transfer(&env.current_contract_address(), &caller, &net_amount);
+
+        // Event: topics = (event_name, caller, entry_id) — indexed.
+        env.events().publish(
+            (Symbol::new(&env, "withdrawal_claimed"), caller.clone(), entry_id),
+            (entry.redeem_amount, fee_amount, net_amount),
+        );
+
+        bump_persistent(&env, &caller);
+        bump_instance(&env);
+
+        Ok(net_amount)
+    }
+
+    /// Read a withdrawal queue entry by ID.
+    ///
+    /// Returns `None` if the entry does not exist (was never created or was
+    /// already claimed).
+    pub fn get_withdrawal_entry(env: Env, entry_id: u64) -> Option<WithdrawalEntry> {
+        storage::get_withdrawal_entry(&env, entry_id)
+    }
     // -----------------------------------------------------------------------
     /// Inject underlying-token yield into the vault without minting new shares.
     ///
