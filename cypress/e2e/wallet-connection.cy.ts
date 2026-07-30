@@ -42,4 +42,28 @@ describe("Wallet Connection", () => {
     cy.get("[data-cy=wallet-address]", { timeout: 8000 }).should("be.visible");
     cy.get("[data-cy=network-badge]").should("contain.text", "TESTNET");
   });
+
+  it("persists session key in sessionStorage after connecting", () => {
+    cy.connectWallet();
+    cy.window().then((win) => {
+      const raw = win.sessionStorage.getItem("aura_last_wallet");
+      expect(raw).to.not.be.null;
+      const parsed = JSON.parse(raw!);
+      expect(parsed).to.have.property("address");
+      expect(parsed.connected).to.equal(true);
+    });
+  });
+
+  it("clears session from sessionStorage after disconnecting", () => {
+    cy.connectWallet();
+    cy.disconnectWallet();
+    cy.window().then((win) => {
+      const raw = win.sessionStorage.getItem("aura_last_wallet");
+      // Either removed entirely or connected flag is false
+      if (raw !== null) {
+        const parsed = JSON.parse(raw);
+        expect(parsed.connected).to.not.equal(true);
+      }
+    });
+  });
 });

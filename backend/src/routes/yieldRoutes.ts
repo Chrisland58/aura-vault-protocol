@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
-import { createYieldService, type YieldSource, type VaultPosition } from "../services/yieldService.js";
-import { getSchedulerMetrics } from "../services/yieldScheduler.js";
+import { createYieldService, YieldSource, VaultPosition } from "../services/yieldService.js";
+import { getLastRunStats, getRunHistory, isYieldWorkerRunning } from "../services/yieldWorker.js";
+import { parsePagination, paginateArray } from "../middleware/paginationMiddleware.js";
 
 const yieldService = createYieldService();
 
@@ -66,11 +67,37 @@ yieldRouter.post("/backfill", async (req: Request, res: Response): Promise<void>
 });
 
 /**
- * GET /api/v1/yield/metrics
- * Returns monitoring counters for the yield calculation scheduler.
- * Suitable for scraping by Prometheus (convert to gauge metrics downstream)
- * or querying from a health-check dashboard.
+ * GET /api/v1/yield/stats
+ * Returns last hourly worker run stats and cursor-paginated run history.
+ * Query params: cursor (opaque base64), limit (default 20, max 100)
  */
-yieldRouter.get("/metrics", (_req: Request, res: Response): void => {
-  res.json(getSchedulerMetrics());
+yieldRouter.get("/stats", async (req: Request, res: Response): Promise<void> => {
+  const { limit, cursor } = parsePagination(req);
+
+  try {
+    const [lastRun, allHistory] = await Promise.all([
+      getLastRunStats(),
+      getRunHistory(100),
+    ]);
+
+    const { data, nextCursor } = paginateArray(
+      allHistory,
+      (item: Record<string, unknown>, index: number) => ({
+        id: String(index),
+        timestamp: typeof item.runAt === "string" ? item.runAt : "0",
+      }),
+      limit,
+      cursor,
+    );
+
+    res.json({
+      workerRunning: isYieldWorkerRunning(),
+      lastRun,
+      data,
+      nextCursor,
+    });
+  } catch (err) {
+    console.error("[yield/stats]", err);
+    res.status(500).json({ error: "Failed to retrieve yield stats" });
+  }
 });

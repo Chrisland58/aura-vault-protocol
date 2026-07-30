@@ -30,7 +30,9 @@ PROJECT_NAME=${project_name}
 DB_ENDPOINT=${db_endpoint}
 DB_NAME=${db_name}
 DB_USERNAME=${db_username}
-DB_PASSWORD=${db_password}
+DB_SECRET_ID=${db_secret_id}
+SECRETS_PROVIDER=aws
+APP_SECRETS_ID=${app_secret_id}
 AWS_REGION=${aws_region}
 EOF
 

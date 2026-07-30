@@ -366,3 +366,112 @@ Key alert rules (from `monitoring/prometheus/alert.rules.yml`):
 - `RedisDown`: Redis exporter reports instance unreachable
 - `HighResponseTime`: p99 latency > 500ms
 - `RDSConnectionSaturation`: connection count near max
+
+---
+
+## CI/CD Pipeline Architecture
+
+```
+Developer Push / PR
+        │
+        ▼
+GitHub Actions (pipeline.yml)
+    │
+    ├── Lint & Format (cargo fmt, clippy, eslint)
+    │
+    ├── Tests
+    │   ├── Smart Contract (cargo test, 22 unit + integration tests)
+    │   └── Frontend (vitest — performanceCharts.ts utilities)
+    │
+    ├── SAST
+    │   ├── cargo-audit  ── known Rust CVE database
+    │   ├── cargo-deny   ── license + advisory policy
+    │   ├── CodeQL       ── semantic JS/TS analysis (security-extended queries)
+    │   └── Trivy        ── container image scan (CRITICAL + HIGH CVEs → SARIF)
+    │
+    ├── Build
+    │   ├── Wasm binary  ── cargo build --target wasm32-unknown-unknown --release
+    │   │                   SHA-256 stamped into deployment log
+    │   └── Docker image ── pushed to ghcr.io/<owner>/aura-vault-protocol
+    │
+    ├── Deploy — Staging (on push to main, after all gates pass)
+    │   ├── stellar contract upload (Stellar testnet)
+    │   ├── Deployment log written to GitHub Step Summary
+    │   └── Smoke test against https://staging.aura-vault.xyz/health
+    │
+    ├── Auto-Rollback (if deploy-staging fails)
+    │   └── Re-deploys last known good commit via git log --skip=1
+    │
+    └── Deploy — Production (manual workflow_dispatch, requires env approval)
+        └── stellar contract upload (Stellar mainnet)
+
+Gate: ci-gate job aggregates all required checks.
+      PR merge is blocked until ci-gate succeeds.
+      Target: all checks complete in < 10 minutes.
+```
+
+### Workflow Files
+
+| File | Purpose |
+|---|---|
+| `.github/workflows/pipeline.yml` | Comprehensive pipeline (lint → test → SAST → build → deploy → rollback) |
+| `.github/workflows/ci.yml` | Fast per-commit Rust + UI smoke tests |
+| `.github/workflows/pr.yml` | PR-specific checks (lint, test, cargo-audit, Wasm size gate) |
+| `.github/workflows/deploy.yml` | Standalone deploy workflow |
+| `.github/workflows/docker-build.yml` | Docker image build/push |
+| `.github/workflows/ci.backend-frontend.yml` | Backend + Next.js build validation |
+
+---
+
+## Developer Onboarding
+
+### Prerequisites
+
+| Tool | Version | Install |
+|---|---|---|
+| Rust | stable | `rustup default stable` |
+| wasm32 target | — | `rustup target add wasm32-unknown-unknown` |
+| Node.js | ≥ 20 | [nodejs.org](https://nodejs.org) |
+| Stellar CLI | latest | `cargo install stellar-cli --locked` |
+| Docker | ≥ 24 | [docs.docker.com](https://docs.docker.com/get-docker/) |
+
+### Local Development (5-minute setup)
+
+```bash
+# 1. Clone
+git clone https://github.com/soterika/aura-vault-protocol.git
+cd aura-vault-protocol
+
+# 2. Run smart contract tests
+cd aura-vault
+cargo test
+
+# 3. Build deployable Wasm
+cargo build --target wasm32-unknown-unknown --release
+# Output: aura-vault/target/wasm32-unknown-unknown/release/aura_vault.wasm
+
+# 4. Start full stack locally
+cd ..
+cp .env.staging.example .env
+docker compose up -d        # Postgres + Redis + backend + frontend
+
+# 5. Run UI component tests
+cd ui && npm ci && npm test
+
+# 6. Run frontend chart utility tests
+cd ../frontend && npm ci && npm test
+```
+
+### Adding a New Feature
+
+1. Create a branch: `git checkout -b feat/<short-description>`
+2. Make changes; ensure `cargo test` and `npm test` pass locally
+3. Open a PR targeting `main` — the CI gate runs automatically
+4. All SAST + test jobs must pass before merge is allowed
+
+### Key Decision Points for New Contributors
+
+- **Why no proxy contract?** Immutability is a deliberate security property. Admin-key compromise cannot silently upgrade the vault.
+- **Why `i128` everywhere?** SEP-41 uses `i128`; matching the type avoids implicit conversions and overflow edge cases.
+- **Why mock data in PerformanceCharts?** The `/api/vault/performance` endpoint falls back to deterministic mock data when unavailable, enabling frontend development without a live backend.
+- **Why cargo-deny in SAST?** `cargo-audit` catches CVEs in the dependency tree; `cargo-deny` enforces license compatibility and blocks newly-introduced advisories before they reach main.
