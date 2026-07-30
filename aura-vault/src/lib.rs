@@ -43,7 +43,11 @@ mod test;
 #[cfg(test)]
 mod security_test;
 #[cfg(test)]
+mod security_attacks;
+#[cfg(test)]
 mod proptest_strategies;
+#[cfg(test)]
+mod overflow_fuzz;
 #[cfg(test)]
 mod tvl_cap_test;
 #[cfg(test)]
