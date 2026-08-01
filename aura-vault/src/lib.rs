@@ -64,6 +64,8 @@ mod event_snapshots;
 mod seed_ratio_test;
 #[cfg(test)]
 mod cei_fuzz_test;
+#[cfg(test)]
+mod lifecycle_test;
 
 mod invariants;
 
