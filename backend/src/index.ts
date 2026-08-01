@@ -26,7 +26,6 @@ import { gasRouter } from "./routes/gasRoutes.js";
 import { yieldRouter } from "./routes/yieldRoutes.js";
 import { queueRouter } from "./routes/queueRoutes.js";
 import { startWorker, stopWorker } from "./queue.js";
-import { queueRouter } from "./routes/queueRoutes.js";
 import { analyticsRouter } from "./routes/analyticsRoutes.js";
 import { warmCache } from "./services/defi.js";
 import { runCacheWarmup, getWarmupStatus } from "./services/cacheWarmup.js";

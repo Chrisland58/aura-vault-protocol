@@ -1,10 +1,27 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { AlertCircle, Check, CheckCircle, XCircle } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  CheckCircle,
+  XCircle,
+  Info,
+  ChevronUp,
+  ChevronDown,
+  Wallet,
+  PauseCircle,
+  Globe,
+  WifiOff,
+  ExternalLink,
+} from "lucide-react";
 import TransactionConfirmation from "@/components/TransactionConfirmation";
 import { useHapticsStandalone } from "@/components/HapticFeedback";
 import { ShareBalanceDisplay } from "@/components/ShareBalanceDisplay";
+import { getErrorRecovery, type VaultErrorContext } from "@/lib/errorTranslator";
+import { useAnimatedNumber } from "@/lib/useAnimatedNumber";
+import { AnimatedShareBalance } from "@/components/AnimatedShareBalance";
+import { EmptyState } from "@/components/EmptyState";
 import {
   createDefaultAdvancedSettingsState,
   readAdvancedSettingsState,
@@ -23,8 +40,6 @@ interface Props {
   /** Current share price used to estimate shares / tokens in the review step. Defaults to "1.0". */
   sharePrice?: string;
   onClose: () => void;
-  /** Current share price in underlying token units — used in withdraw review */
-  sharePrice?: string;
   /** Unix timestamp (ms) when sharePrice was last fetched */
   sharePriceUpdatedAt?: number;
 }
@@ -372,7 +387,7 @@ function AdvancedSettingsPanel({ settings, isOpen, onToggle, onChange }: Advance
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function TransactionModal({ type, balance, sharePrice = "1.0", onClose }: Props) {
+export default function TransactionModal({ type, balance, sharePrice = "1.0", sharePriceUpdatedAt, onClose }: Props) {
   const [step, setStep] = useState<Step>(1);
   const [amount, setAmount] = useState("");
   const [amountError, setAmountError] = useState("");

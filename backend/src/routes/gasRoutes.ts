@@ -52,9 +52,9 @@ gasRouter.get("/history", async (req: Request, res: Response): Promise<void> => 
     const allHistory = await gasService.history(chainId, MAX_LIMIT);
     const { data, nextCursor } = paginateArray(
       allHistory,
-      (item: Record<string, unknown>, index: number) => ({
+      (item, index) => ({
         id: String(index),
-        timestamp: typeof item.timestamp === "string" ? item.timestamp : String(index),
+        timestamp: typeof item.fetchedAt === "string" ? item.fetchedAt : String(index),
       }),
       limit,
       cursor,

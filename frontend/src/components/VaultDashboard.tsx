@@ -5,6 +5,9 @@ import WalletConnect from "./WalletConnect";
 import VaultActions from "./VaultActions";
 import { useOnboarding } from "@/components/OnboardingChecklist";
 import { FinancialValue } from "./FinancialValue";
+import { EmptyState } from "./EmptyState";
+import { AnimatedShareBalance } from "./AnimatedShareBalance";
+import { useAnimatedNumber } from "@/lib/useAnimatedNumber";
 
 interface VaultStats {
   tvl: string;

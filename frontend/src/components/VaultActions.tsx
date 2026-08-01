@@ -22,6 +22,8 @@ export default function VaultActions() {
   const [modal, setModal] = useState<Tab | null>(null);
   const [balance, setBalance] = useState("1000");
   const [depositState, setDepositState] = useState<ButtonTxState>("idle");
+  const [sharePrice, setSharePrice] = useState("1.0");
+  const [sharePriceUpdatedAt, setSharePriceUpdatedAt] = useState<number | undefined>(undefined);
   const { markComplete } = useOnboarding();
 
   useEffect(() => {
