@@ -67,8 +67,6 @@ mod cei_fuzz_test;
 #[cfg(test)]
 mod lifecycle_test;
 
-mod invariants;
-
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
 use storage::{
@@ -120,26 +118,6 @@ fn bump_user_yield(env: &Env, addr: &Address) {
 
 #[contract]
 pub struct AuraVault;
-
-/// Fixed-point precision scalar for yield-per-share accumulator.
-/// Using 1e12 (12 decimal places) gives sub-stroop precision for
-/// vaults with up to 1e12 shares outstanding.
-const YIELD_PRECISION: i128 = 1_000_000_000_000; // 1e12
-
-/// Bump TTL for both the user's share balance and their yield checkpoint/pending entries.
-fn bump_user_yield(env: &Env, addr: &Address) {
-    use storage::{PERSISTENT_BUMP_AMOUNT, PERSISTENT_LIFETIME_THRESHOLD};
-    env.storage().persistent().extend_ttl(
-        &storage::DataKey::UserCheckpoint(addr.clone()),
-        PERSISTENT_LIFETIME_THRESHOLD,
-        PERSISTENT_BUMP_AMOUNT,
-    );
-    env.storage().persistent().extend_ttl(
-        &storage::DataKey::UserPendingYield(addr.clone()),
-        PERSISTENT_LIFETIME_THRESHOLD,
-        PERSISTENT_BUMP_AMOUNT,
-    );
-}
 
 #[contractimpl]
 impl AuraVault {
