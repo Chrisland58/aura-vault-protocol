@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Static export — produces /out directory served by nginx:alpine in Docker.
+  // All pages are "use client" with no server-side data fetching, so a full
+  // static export is safe and gives a sub-50MB final image.
+  output: "export",
   compress: true,
   experimental: {
     useTypeScriptCli: true,

@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { Bell, BellOff, Mail, AlertTriangle } from "lucide-react";
+import { Bell, BellOff, Mail, AlertTriangle, LayoutDashboard, RotateCcw } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { HapticsToggle } from "@/components/HapticsToggle";
+import { useWidgetLayout } from "@/lib/useWidgetLayout";
 import "@/lib/i18n";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -386,6 +387,87 @@ function ApyAlertSection({ settings, update, onEmailAlert }: ApyAlertSectionProp
   );
 }
 
+// ─── Widget Visibility Section (Issue #498) ───────────────────────────────────
+
+function WidgetVisibilitySection() {
+  const { widgets, toggleWidget, resetLayout } = useWidgetLayout();
+  const [resetConfirm, setResetConfirm] = useState(false);
+
+  function handleReset() {
+    if (!resetConfirm) {
+      setResetConfirm(true);
+      setTimeout(() => setResetConfirm(false), 3000);
+      return;
+    }
+    resetLayout();
+    setResetConfirm(false);
+  }
+
+  return (
+    <section className="mb-8" aria-labelledby="widget-visibility-heading">
+      <h2
+        id="widget-visibility-heading"
+        className="text-lg font-medium mb-3 flex items-center gap-2"
+      >
+        <LayoutDashboard size={18} className="text-indigo-500" />
+        Dashboard Widgets
+      </h2>
+      <p className="text-xs text-zinc-500 mb-3">
+        Toggle which widgets appear on your dashboard. Drag the grip handles on
+        the dashboard to reorder them.
+      </p>
+
+      <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 divide-y divide-zinc-100 dark:divide-zinc-800">
+        {widgets.map((widget) => (
+          <label
+            key={widget.id}
+            className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              {/* Visibility indicator dot */}
+              <span
+                aria-hidden="true"
+                className={`h-2 w-2 rounded-full flex-shrink-0 ${
+                  widget.visible ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"
+                }`}
+              />
+              <span className="text-sm font-medium">{widget.label}</span>
+            </div>
+            <input
+              type="checkbox"
+              checked={widget.visible}
+              onChange={() => toggleWidget(widget.id)}
+              aria-label={`${widget.visible ? "Hide" : "Show"} ${widget.label} widget`}
+              className="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500"
+            />
+          </label>
+        ))}
+
+        {/* Reset to defaults */}
+        <div className="px-4 py-3 flex items-center justify-between bg-zinc-50 dark:bg-zinc-800/50 rounded-b-xl">
+          <p className="text-xs text-zinc-500">
+            {resetConfirm
+              ? "Click again to confirm reset."
+              : "Restore default widget order and visibility."}
+          </p>
+          <button
+            onClick={handleReset}
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+              resetConfirm
+                ? "bg-red-600 text-white hover:bg-red-700"
+                : "border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            }`}
+            aria-label="Reset dashboard layout to defaults"
+          >
+            <RotateCcw size={12} />
+            {resetConfirm ? "Confirm reset" : "Reset layout"}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
@@ -603,6 +685,9 @@ export default function SettingsPage() {
           <h2 className="text-lg font-medium mb-3">Haptic Feedback</h2>
           <HapticsToggle />
         </section>
+
+        {/* ── Dashboard Widgets (Issue #498) ────────────────────────────── */}
+        <WidgetVisibilitySection />
 
         {/* Danger Zone */}
         <section>
