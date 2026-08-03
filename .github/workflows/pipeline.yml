@@ -133,7 +133,7 @@ jobs:
           cargo audit --manifest-path aura-vault/Cargo.toml
 
       - name: cargo-deny (license + advisories)
-        uses: EmbarkStudios/cargo-deny-action@v1
+        uses: EmbarkStudios/cargo-deny-action@v2
         with:
           manifest-path: aura-vault/Cargo.toml
           command: check advisories licenses
