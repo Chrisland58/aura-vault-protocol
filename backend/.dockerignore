@@ -8,16 +8,13 @@
 node_modules
 
 # Build outputs (rebuilt inside the container)
-.next
-out
+dist
 
 # Test files
 **/*.test.ts
-**/*.test.tsx
 **/*.spec.ts
-**/*.spec.tsx
 src/tests/
-src/test/
+src/scripts/*.test.ts
 
 # Local environment / secrets
 .env
@@ -32,3 +29,4 @@ src/test/
 # Docs and misc
 *.md
 README*
+Dockerfile*
