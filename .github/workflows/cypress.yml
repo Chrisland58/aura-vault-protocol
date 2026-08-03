@@ -38,7 +38,7 @@ jobs:
         run: npx next start &
 
       - name: Run Cypress (${{ matrix.browser }})
-        uses: cypress-io/github-action@v6
+        uses: cypress-io/github-action@v7
         with:
           browser: ${{ matrix.browser }}
           wait-on: "http://localhost:3000"
@@ -96,7 +96,7 @@ jobs:
         run: npx next start &
 
       - name: Run axe-core accessibility audit (Cypress)
-        uses: cypress-io/github-action@v6
+        uses: cypress-io/github-action@v7
         with:
           browser: chrome
           spec: cypress/e2e/accessibility.cy.ts
