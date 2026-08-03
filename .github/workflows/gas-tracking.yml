@@ -87,7 +87,7 @@ jobs:
           cat ../gas-measurements.json
 
       - name: Upload measurements artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gas-measurements-${{ github.run_id }}
           path: gas-measurements.json
@@ -140,7 +140,7 @@ jobs:
 
       - name: Upload gas report artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gas-report-${{ github.run_id }}
           path: gas-report.md

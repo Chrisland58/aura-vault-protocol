@@ -189,7 +189,7 @@ jobs:
 
       - name: Upload all scan results as artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trivy-scan-results-${{ github.sha }}
           path: |
