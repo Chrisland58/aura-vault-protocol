@@ -46,7 +46,7 @@ jobs:
       contract-critical: ${{ steps.scan-contract.outputs.critical_count }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -251,7 +251,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download scan results
         uses: actions/download-artifact@v8

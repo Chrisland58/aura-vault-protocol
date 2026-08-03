@@ -47,7 +47,7 @@ jobs:
         working-directory: aura-vault
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -106,7 +106,7 @@ jobs:
       passed: ${{ steps.compare.outputs.passed }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -195,7 +195,7 @@ jobs:
       github.event.inputs.update_baselines == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
