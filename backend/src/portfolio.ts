@@ -7,6 +7,9 @@ const router = express.Router();
 const cache = new Map<string, { data: PortfolioResponse; expiresAt: number }>();
 const CACHE_TTL_MS = 30_000;
 
+export function clearPortfolioCache(): void {
+  cache.clear();
+}
 const portfolioLimiter = rateLimit({
   windowMs: 60_000,
   max: 100,

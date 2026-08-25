@@ -19,6 +19,7 @@ import { webhookRouter } from "./webhook.js";
 import portfolioRouter from "./portfolio.js";
 import { emailRouter } from "./routes/emailRoutes.js";
 import { gasRouter } from "./routes/gasRoutes.js";
+import { vaultRouter } from "./routes/vaultRoutes.js";
 import { yieldRouter } from "./routes/yieldRoutes.js";
 import { startWorker, stopWorker } from "./queue.js";
 import { queueRouter } from "./routes/queueRoutes.js";
@@ -85,6 +86,7 @@ app.use("/api/webhooks", authenticate, webhookRouter);
 app.use("/api/email", emailRouter);
 app.use("/api/v1/user/portfolio", authenticate, portfolioRouter);
 app.use("/api/v1/gas", gasRouter);
+app.use("/api/vault", vaultRouter);
 app.use("/api/v1/yield", yieldRouter);
 app.use("/api/v1/queue", queueRouter);
 

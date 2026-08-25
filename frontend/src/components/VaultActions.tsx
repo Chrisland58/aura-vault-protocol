@@ -11,7 +11,7 @@ export default function VaultActions() {
   const [balance, setBalance] = useState("1000");
 
   useEffect(() => {
-    fetch("/api/vault/balance_of?address=mock")
+    fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/vault/balance_of?address=mock`)
       .then((r) => r.ok ? r.json() : null)
       .then((d) => { if (d?.balance) setBalance(d.balance); })
       .catch(() => {});
