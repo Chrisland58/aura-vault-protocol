@@ -1,5 +1,5 @@
 /**
- * Vault Stats Route — Issue #466
+ * Vault Stats Route � Issue #466
  *
  * GET /api/v1/vault/stats
  *
@@ -15,11 +15,11 @@ import { getDbMetrics, getSlowQueryLog, dbMetricsPrometheusText } from "../servi
 
 export const VAULT_STATS_CACHE_NS = "vault:stats";
 export const VAULT_STATS_CACHE_KEY = "current";
-export const VAULT_STATS_TTL_SECS = 60; // 1-minute TTL
+export const VAULT_STATS_TTL_SECS = 60;
 
 export interface VaultStatsCacheEntry {
   data: VaultStatsData;
-  cached_at: number; // Unix epoch ms
+  cached_at: number;
 }
 
 export interface VaultStatsResponse extends VaultStatsData {
@@ -37,7 +37,6 @@ export const vaultRouter = Router();
 vaultRouter.get("/stats", async (_req: Request, res: Response): Promise<void> => {
   const fetchedAt = new Date().toISOString();
 
-  // --- Try cache first ---
   let cacheEntry: VaultStatsCacheEntry | null = null;
   try {
     cacheEntry = await cacheGet<VaultStatsCacheEntry>(
@@ -45,7 +44,7 @@ vaultRouter.get("/stats", async (_req: Request, res: Response): Promise<void> =>
       VAULT_STATS_CACHE_KEY,
     );
   } catch {
-    // Redis unavailable — fall through to live fetch
+    // Redis unavailable � fall through to live fetch
   }
 
   if (cacheEntry !== null) {
@@ -60,16 +59,14 @@ vaultRouter.get("/stats", async (_req: Request, res: Response): Promise<void> =>
     return;
   }
 
-  // --- Cache miss: fetch live data ---
   try {
     const liveData = await getVaultStats();
     const entry: VaultStatsCacheEntry = { data: liveData, cached_at: Date.now() };
 
-    // Populate cache (best-effort — ignore Redis errors)
     try {
       await cacheSet(VAULT_STATS_CACHE_NS, VAULT_STATS_CACHE_KEY, entry, VAULT_STATS_TTL_SECS);
     } catch {
-      // Redis unavailable — serve without caching
+      // Redis unavailable � serve without caching
     }
 
     const response: VaultStatsResponse = {
@@ -87,7 +84,7 @@ vaultRouter.get("/stats", async (_req: Request, res: Response): Promise<void> =>
 
 /**
  * POST /api/v1/vault/stats/invalidate
- * Purges the vault-stats cache. Called when a harvest event is received.
+ * Purges the vault-stats cache.
  */
 vaultRouter.post("/stats/invalidate", async (_req: Request, res: Response): Promise<void> => {
   try {
@@ -99,19 +96,13 @@ vaultRouter.post("/stats/invalidate", async (_req: Request, res: Response): Prom
   }
 });
 
-/** Programmatic cache invalidation — used by harvest event handlers. */
+/** Programmatic cache invalidation � used by harvest event handlers. */
 export async function invalidateVaultStatsCache(): Promise<void> {
   await cacheDel(VAULT_STATS_CACHE_NS, VAULT_STATS_CACHE_KEY);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Issue #324 — DB Query Performance Monitoring
-// ─────────────────────────────────────────────────────────────────────────────
+// Issue #324 � DB Query Performance Monitoring
 
-/**
- * GET /api/v1/vault/metrics/db
- * Returns histogram metrics and p99 estimate for each query type.
- */
 vaultRouter.get("/metrics/db", async (_req: Request, res: Response): Promise<void> => {
   try {
     const metrics = await getDbMetrics();
@@ -122,10 +113,6 @@ vaultRouter.get("/metrics/db", async (_req: Request, res: Response): Promise<voi
   }
 });
 
-/**
- * GET /api/v1/vault/metrics/db/slow-log
- * Returns the slow query log (most recent first).
- */
 vaultRouter.get("/metrics/db/slow-log", async (_req: Request, res: Response): Promise<void> => {
   try {
     const log = await getSlowQueryLog();
@@ -136,11 +123,6 @@ vaultRouter.get("/metrics/db/slow-log", async (_req: Request, res: Response): Pr
   }
 });
 
-/**
- * GET /api/v1/vault/metrics/db/prometheus
- * Returns Prometheus text exposition for db_query_duration_seconds histogram.
- * Allows Prometheus to scrape this path directly if configured.
- */
 vaultRouter.get("/metrics/db/prometheus", async (_req: Request, res: Response): Promise<void> => {
   try {
     const text = await dbMetricsPrometheusText();
@@ -150,3 +132,48 @@ vaultRouter.get("/metrics/db/prometheus", async (_req: Request, res: Response): 
     res.status(500).send("# error generating metrics\n");
   }
 });
+
+/**
+ * GET /api/vault/total_assets
+ * Temporary dashboard endpoint from Issue #6.
+ */
+vaultRouter.get(
+  "/total_assets",
+  (_req: Request, res: Response): void => {
+    res.json({
+      total: "1050",
+      userBalance: "1050",
+      userShares: "1000",
+      pricePerShare: "1.0500",
+    });
+  },
+);
+
+/**
+ * GET /api/vault/apy
+ * Temporary dashboard APY endpoint from Issue #6.
+ */
+vaultRouter.get(
+  "/apy",
+  (_req: Request, res: Response): void => {
+    res.json({
+      apy: "8.5",
+    });
+  },
+);
+
+/**
+ * GET /api/vault/balance_of
+ * Temporary dashboard balance endpoint from Issue #6.
+ */
+vaultRouter.get(
+  "/balance_of",
+  (req: Request, res: Response): void => {
+    const address = String(req.query.address ?? "");
+
+    res.json({
+      address,
+      balance: "1050",
+    });
+  },
+);
