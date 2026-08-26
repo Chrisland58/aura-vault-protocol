@@ -1,9 +1,14 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
+import {
+  parsePagination,
+  paginateArray,
+  buildCursor,
+} from "./middleware/paginationMiddleware.js";
 
 const router = express.Router();
 
-// In-memory cache: userId -> { data, expiresAt }
+// In-memory cache: cacheKey -> { data, expiresAt }
 const cache = new Map<string, { data: PortfolioResponse; expiresAt: number }>();
 const CACHE_TTL_MS = 30_000;
 
@@ -23,38 +28,34 @@ interface VaultPosition {
   underlyingBalance: string;
   apy: number;
   yieldEarned: string;
+  /** ISO timestamp used as cursor anchor */
+  createdAt: string;
 }
 
 interface PortfolioResponse {
   userId: string;
   totalBalance: string;
-  positions: VaultPosition[];
-  pagination: { page: number; pageSize: number; total: number };
+  data: VaultPosition[];
+  nextCursor: string | null;
 }
 
 // Synthetic data builder — replace with real Soroban RPC calls
-function buildPortfolio(userId: string, page: number, pageSize: number): PortfolioResponse {
-  const allPositions: VaultPosition[] = [
+function buildAllPositions(): VaultPosition[] {
+  return [
     {
       contractId: process.env.VAULT_CONTRACT_ID ?? "CAURA_VAULT_TESTNET",
       shares: "1000",
       underlyingBalance: "1050",
       apy: 8.5,
       yieldEarned: "50",
+      createdAt: "2026-01-01T00:00:00.000Z",
     },
   ];
-  const total = allPositions.length;
-  const start = (page - 1) * pageSize;
-  const positions = allPositions.slice(start, start + pageSize);
-  const totalBalance = positions
-    .reduce((sum, p) => sum + BigInt(p.underlyingBalance), 0n)
-    .toString();
-  return { userId, totalBalance, positions, pagination: { page, pageSize, total } };
 }
 
 /**
  * GET /api/v1/user/portfolio
- * Query params: page (default 1), pageSize (default 20, max 100)
+ * Query params: cursor (opaque base64), limit (default 20, max 100)
  */
 router.get(
   "/",
@@ -67,12 +68,9 @@ router.get(
     }
 
     const userId: string = user.sub;
+    const { limit, cursor } = parsePagination(req);
+    const cacheKey = `${userId}:${limit}:${cursor ?? ""}`;
 
-    // Validate pagination
-    const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10) || 1);
-    const pageSize = Math.min(100, Math.max(1, parseInt((req.query.pageSize as string) ?? "20", 10) || 20));
-
-    const cacheKey = `${userId}:${page}:${pageSize}`;
     const cached = cache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       res.setHeader("X-Cache", "HIT");
@@ -81,10 +79,32 @@ router.get(
     }
 
     try {
-      const data = buildPortfolio(userId, page, pageSize);
-      cache.set(cacheKey, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+      const allPositions = buildAllPositions();
+
+      const { data, nextCursor } = paginateArray(
+        allPositions,
+        (pos: VaultPosition) => ({
+          id: pos.contractId,
+          timestamp: pos.createdAt,
+        }),
+        limit,
+        cursor,
+      );
+
+      const totalBalance = data
+        .reduce((sum, p) => sum + BigInt(p.underlyingBalance), 0n)
+        .toString();
+
+      const response: PortfolioResponse = {
+        userId,
+        totalBalance,
+        data,
+        nextCursor,
+      };
+
+      cache.set(cacheKey, { data: response, expiresAt: Date.now() + CACHE_TTL_MS });
       res.setHeader("X-Cache", "MISS");
-      res.json(data);
+      res.json(response);
     } catch (err) {
       console.error("[portfolio]", err);
       res.status(500).json({ error: "Internal server error" });
