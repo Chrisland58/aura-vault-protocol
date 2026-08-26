@@ -66,11 +66,16 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - name: Install dependencies
-        run: npm install
+        run: pnpm install --frozen-lockfile
 
       - name: Run UI tests
-        run: npm test -- --reporter=verbose 2>&1 | tee ../test-results-ui.txt
+        run: pnpm test -- --reporter=verbose 2>&1 | tee ../test-results-ui.txt
 
       - name: Upload UI test results
         if: always()
