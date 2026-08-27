@@ -1,0 +1,76 @@
+{
+  "nav": {
+    "faq": "常见问题",
+    "settings": "设置"
+  },
+  "home": {
+    "get_started": "开始使用，请编辑 page.tsx 文件。",
+    "instructions": "需要起始点或更多说明？请访问",
+    "templates": "模板",
+    "or_the": "或者",
+    "learning_center": "学习中心",
+    "deploy_now": "立即部署",
+    "documentation": "文档"
+  },
+  "faq": {
+    "title": "常见问题解答",
+    "subtitle": "关于 Aura Vault Protocol 的一切。",
+    "search_placeholder": "搜索问题…",
+    "all_categories": "全部",
+    "no_results": "未找到结果。",
+    "cant_find": "找不到您的答案？",
+    "open_issue": "在 GitHub 上提交 Issue"
+  },
+  "settings": {
+    "title": "设置",
+    "saved": "设置已保存",
+    "appearance": {
+      "title": "外观",
+      "description": "选择您偏好的颜色主题。"
+    },
+    "wallet": {
+      "title": "已连接钱包",
+      "no_wallet": "未连接钱包",
+      "connect": "连接钱包"
+    },
+    "slippage": {
+      "title": "滑点容忍度",
+      "high_warning": "高滑点可能导致不利的交易"
+    },
+    "notifications": {
+      "title": "通知",
+      "deposits": "存款确认",
+      "withdrawals": "提款确认",
+      "vault_events": "金库性能警报",
+      "email": "电子邮件通知",
+      "email_address": "电子邮件地址",
+      "email_placeholder": "您@示例.com"
+    },
+    "security": {
+      "title": "安全",
+      "two_factor": "双因素认证",
+      "two_factor_desc": "添加额外的安全层"
+    },
+    "danger": {
+      "title": "危险区",
+      "description": "停用您的账户将删除所有数据且无法撤销。",
+      "deactivate": "停用账户",
+      "confirm_message": "您确定吗？此操作不可逆。",
+      "cancel": "取消",
+      "confirm": "确认停用"
+    }
+  },
+  "notifications": {
+    "title": "通知",
+    "mark_all_read": "全部标记为已读",
+    "clear": "清除",
+    "empty": "暂无通知",
+    "unread_aria": "通知，{{count}} 条未读",
+    "dismiss": "关闭通知"
+  },
+  "theme": {
+    "light": "浅色",
+    "dark": "深色",
+    "auto": "自动"
+  }
+}
