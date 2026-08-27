@@ -1,0 +1,76 @@
+{
+  "nav": {
+    "faq": "FAQ",
+    "settings": "Einstellungen"
+  },
+  "home": {
+    "get_started": "Um zu beginnen, bearbeite die Datei page.tsx.",
+    "instructions": "Suchen Sie einen Ausgangspunkt oder weitere Anweisungen? Besuchen Sie",
+    "templates": "Vorlagen",
+    "or_the": "oder das",
+    "learning_center": "Lernzentrum",
+    "deploy_now": "Jetzt bereitstellen",
+    "documentation": "Dokumentation"
+  },
+  "faq": {
+    "title": "Häufig Gestellte Fragen",
+    "subtitle": "Alles, was Sie über Aura Vault Protocol wissen müssen.",
+    "search_placeholder": "Fragen suchen…",
+    "all_categories": "Alle",
+    "no_results": "Keine Ergebnisse gefunden.",
+    "cant_find": "Können Sie Ihre Antwort nicht finden?",
+    "open_issue": "GitHub Issue öffnen"
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "saved": "Einstellungen gespeichert",
+    "appearance": {
+      "title": "Erscheinungsbild",
+      "description": "Wählen Sie Ihr bevorzugtes Farbthema."
+    },
+    "wallet": {
+      "title": "Verbundenes Wallet",
+      "no_wallet": "Kein Wallet verbunden",
+      "connect": "Wallet Verbinden"
+    },
+    "slippage": {
+      "title": "Slippage-Toleranz",
+      "high_warning": "Hohe Slippage kann zu ungünstigen Trades führen"
+    },
+    "notifications": {
+      "title": "Benachrichtigungen",
+      "deposits": "Einzahlungsbestätigungen",
+      "withdrawals": "Auszahlungsbestätigungen",
+      "vault_events": "Vault-Leistungsalarme",
+      "email": "E-Mail-Benachrichtigungen",
+      "email_address": "E-Mail-Adresse",
+      "email_placeholder": "sie@beispiel.de"
+    },
+    "security": {
+      "title": "Sicherheit",
+      "two_factor": "Zwei-Faktor-Authentifizierung",
+      "two_factor_desc": "Fügen Sie eine zusätzliche Sicherheitsebene hinzu"
+    },
+    "danger": {
+      "title": "Gefahrenzone",
+      "description": "Das Deaktivieren Ihres Kontos entfernt alle Daten und kann nicht rückgängig gemacht werden.",
+      "deactivate": "Konto Deaktivieren",
+      "confirm_message": "Sind Sie sicher? Diese Aktion ist unwiderruflich.",
+      "cancel": "Abbrechen",
+      "confirm": "Deaktivierung Bestätigen"
+    }
+  },
+  "notifications": {
+    "title": "Benachrichtigungen",
+    "mark_all_read": "Alle als gelesen markieren",
+    "clear": "Löschen",
+    "empty": "Keine Benachrichtigungen",
+    "unread_aria": "Benachrichtigungen, {{count}} ungelesen",
+    "dismiss": "Benachrichtigung schließen"
+  },
+  "theme": {
+    "light": "Hell",
+    "dark": "Dunkel",
+    "auto": "Auto"
+  }
+}
