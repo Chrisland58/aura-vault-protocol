@@ -22,4 +22,16 @@ pub enum VaultError {
     VaultPaused            = 11,
     /// Token balance is inconsistent with tracked state (flash loan guard).
     BalanceMismatch        = 12,
+    /// Caller is not the admin — harvest rejected.
+    HarvestUnauthorized    = 13,
+    /// Deposit would exceed the TVL cap.
+    TvlCapExceeded         = 14,
+    /// No accrued fees available to claim.
+    NoFeesToClaim          = 15,
+    /// Caller is not the KYC verifier.
+    KycUnauthorized        = 16,
+    /// Address is not approved for deposits (KYC required).
+    KycNotApproved         = 17,
+    /// KYC approval has expired.
+    KycExpired             = 18,
 }
