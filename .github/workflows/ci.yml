@@ -34,7 +34,7 @@ jobs:
           - ui
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node 20
         uses: actions/setup-node@v7
@@ -74,7 +74,7 @@ jobs:
             runner_dir: ui
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ── Rust setup (only for rust matrix entry) ──
       - name: Install Rust stable
@@ -149,7 +149,7 @@ jobs:
             runner_dir: aura-vault
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ── Rust ──
       - name: Install Rust stable
@@ -211,7 +211,7 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node 20
         uses: actions/setup-node@v7
@@ -283,7 +283,7 @@ jobs:
           --health-retries=10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node 20
         uses: actions/setup-node@v7
@@ -318,7 +318,7 @@ jobs:
     needs: [migration-tests]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node 20
         uses: actions/setup-node@v7
@@ -341,7 +341,7 @@ jobs:
     needs: [build]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node 20
         uses: actions/setup-node@v7
