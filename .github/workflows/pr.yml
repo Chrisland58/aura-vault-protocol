@@ -110,7 +110,7 @@ jobs:
           fi
 
       - name: Upload Wasm artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: aura-vault-wasm-pr-${{ github.event.number }}
           path: aura-vault/target/wasm32-unknown-unknown/release/aura_vault.wasm
@@ -174,7 +174,7 @@ jobs:
 
       # ── Upload HTML report and screenshots on failure ────────────────────
       - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: playwright-mobile-report-pr-${{ github.event.number }}
@@ -183,7 +183,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload failure screenshots
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-mobile-screenshots-pr-${{ github.event.number }}

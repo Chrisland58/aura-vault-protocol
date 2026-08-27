@@ -54,7 +54,7 @@ jobs:
 
       - name: Upload npm audit results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-audit-${{ matrix.workspace }}
           path: ${{ matrix.workspace }}/npm-audit-${{ matrix.workspace }}.json
@@ -96,7 +96,7 @@ jobs:
 
       - name: Upload cargo audit results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cargo-audit-results
           path: aura-vault/cargo-audit-results.json
@@ -147,7 +147,7 @@ jobs:
 
       - name: Upload Trivy results artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trivy-${{ matrix.context }}
           path: trivy-${{ matrix.context }}.sarif
@@ -202,7 +202,7 @@ jobs:
 
       - name: Upload Semgrep results artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: semgrep-results
           path: semgrep.sarif

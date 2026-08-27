@@ -65,7 +65,7 @@ jobs:
           echo "Changed frontend files: $COUNT"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-build-${{ github.sha }}
           path: frontend/out

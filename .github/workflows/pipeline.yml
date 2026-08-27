@@ -79,7 +79,7 @@ jobs:
       - name: Run all tests
         run: cargo test --manifest-path aura-vault/Cargo.toml -- --test-threads=4 2>&1 | tee test-results-contract.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: contract-test-results
@@ -109,7 +109,7 @@ jobs:
           npm ci
           npm test -- --reporter=verbose 2>&1 | tee -a ../test-results-frontend.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: frontend-test-results
@@ -233,7 +233,7 @@ jobs:
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
           echo "Wasm SHA-256: $SHA" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: aura-vault-wasm-${{ github.sha }}
           path: aura-vault/target/wasm32-unknown-unknown/release/aura_vault.wasm
