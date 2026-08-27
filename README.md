@@ -110,28 +110,6 @@ stellar contract invoke \
 | 10 | `StorageLayoutMismatch` | On-chain layout version mismatch on upgrade |
 | 11 | `VaultPaused` | Mutating operation called while vault is paused |
 | 12 | `BalanceMismatch` | Actual token balance differs from tracked state (flash loan guard) |
-| 13 | `TimelockNotExpired` | Governance proposal execution attempted before timelock has elapsed |
-| 14 | `NotApproved` | Governance proposal has not reached required signature threshold |
-| 15 | `AlreadyVoted` | Signer has already cast a vote on this proposal |
-
-## Deployment Strategy
-
-Aura Vault Protocol uses a **blue-green deployment strategy** for zero-downtime releases of the backend infrastructure. This ensures:
-
-- Instant atomic traffic switches between deployment slots
-- Automated smoke tests before and after each deployment
-- 30-minute rollback window with instant one-command reversion
-- Deployment duration under 5 minutes
-
-See [BLUE_GREEN_DEPLOYMENT.md](./BLUE_GREEN_DEPLOYMENT.md) for the complete runbook, architecture details, and rollback procedures.
-
-## Documentation
-
-- **[Deployment Guide](./DEPLOYMENT_GUIDE.md)** — Smart contract deployment to Stellar testnet/mainnet
-- **[Blue-Green Strategy](./BLUE_GREEN_DEPLOYMENT.md)** — Backend zero-downtime deployment runbook
-- **[Operations Runbook](./OPERATIONS_RUNBOOK.md)** — Day-to-day operational procedures
-- **[Governance](./GOVERNANCE.md)** — Multi-signature governance and timelock system
-- **[Security](./SECURITY.md)** — Security model, audit results, and vulnerability reporting
 
 ## License
 

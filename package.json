@@ -3,39 +3,18 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "prepare": "husky",
-    "lint-staged": "lint-staged",
     "cy:open": "cypress open",
     "cy:run": "cypress run",
-    "cy:run:a11y": "cypress run --spec 'cypress/e2e/accessibility.cy.ts'",
     "cy:run:chrome": "cypress run --browser chrome",
     "cy:run:firefox": "cypress run --browser firefox",
     "cy:run:edge": "cypress run --browser edge",
     "pw:install": "playwright install --with-deps",
     "pw:test": "playwright test",
-    "pw:test:a11y": "playwright test playwright/accessibility.spec.ts",
-    "pw:test:mobile": "playwright test playwright/mobile.spec.ts --project=iphone-se --project=iphone-14 --project=android-lg",
     "pw:test:ui": "playwright test --ui",
     "pw:report": "playwright show-report"
   },
-  "lint-staged": {
-    "*.{js,ts,tsx,mjs}": [
-      "eslint --fix",
-      "prettier --write"
-    ],
-    "*.rs": [
-      "rustfmt"
-    ]
-  },
   "devDependencies": {
-    "@axe-core/playwright": "^4.13.0",
-    "@commitlint/cli": "^19.6.1",
-    "@commitlint/config-conventional": "^21.2.2",
-    "@playwright/test": "^1.62.1",
-    "axe-core": "^4.13.0",
-    "cypress": "^15.21.0",
-    "cypress-axe": "^1.5.0",
-    "husky": "^9.1.7",
-    "wait-on": "^9.1.0"
+    "@playwright/test": "^1.44.0",
+    "cypress": "^13.13.0"
   }
 }

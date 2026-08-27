@@ -224,13 +224,19 @@ paths:
       description: |
         Returns all vault positions for the authenticated wallet, including share
         balances, underlying token values, APY, and yield earned.  Results are
-        cached for 30 seconds per user.  Uses cursor-based pagination.
+        cached for 30 seconds per user.
       operationId: getPortfolio
       security:
         - BearerAuth: []
       parameters:
-        - $ref: "#/components/parameters/CursorParam"
-        - $ref: "#/components/parameters/LimitParam"
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: Page number (1-based).
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: Results per page (max 100).
       responses:
         "200":
           description: Portfolio data
@@ -245,14 +251,13 @@ paths:
               example:
                 userId: "GABCDE..."
                 totalBalance: "1050"
-                data:
+                positions:
                   - contractId: "CAURA_VAULT_TESTNET"
                     shares: "1000"
                     underlyingBalance: "1050"
                     apy: 8.5
                     yieldEarned: "50"
-                    createdAt: "2026-01-01T00:00:00.000Z"
-                nextCursor: null
+                pagination: { page: 1, pageSize: 20, total: 1 }
         "401":
           $ref: "#/components/responses/Unauthorized"
         "429":
@@ -337,12 +342,14 @@ paths:
       tags: [Yield]
       summary: Yield worker stats
       description: |
-        Returns the last scheduled worker run statistics and cursor-paginated
-        run history.
+        Returns the last scheduled worker run statistics.  Pass `?history=N`
+        to include the last N run records (max 200).
       operationId: getYieldStats
       parameters:
-        - $ref: "#/components/parameters/CursorParam"
-        - $ref: "#/components/parameters/LimitParam"
+        - name: history
+          in: query
+          schema: { type: integer, default: 0, minimum: 0, maximum: 200 }
+          description: Number of historical run records to include.
       responses:
         "200":
           description: Yield worker stats
@@ -392,15 +399,17 @@ paths:
     get:
       tags: [Gas]
       summary: Gas price history
-      description: Returns cursor-paginated gas price samples for the requested chain.
+      description: Returns recent sampled gas prices for the requested chain (max 50 records).
       operationId: getGasHistory
       parameters:
         - name: chainId
           in: query
           schema: { type: integer, default: 1 }
           description: EVM chain ID.
-        - $ref: "#/components/parameters/CursorParam"
-        - $ref: "#/components/parameters/LimitParam"
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, minimum: 1, maximum: 50 }
+          description: Number of samples to return.
       responses:
         "200":
           description: Gas price history
@@ -557,18 +566,17 @@ paths:
     get:
       tags: [Queue]
       summary: Dead-letter queue
-      description: Returns cursor-paginated jobs that have exhausted retry attempts.
+      description: Returns all jobs that have exhausted retry attempts.
       operationId: getDeadLetterQueue
-      parameters:
-        - $ref: "#/components/parameters/CursorParam"
-        - $ref: "#/components/parameters/LimitParam"
       responses:
         "200":
-          description: Dead-letter jobs (paginated)
+          description: Dead-letter jobs
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PaginatedJobResponse"
+                type: array
+                items:
+                  $ref: "#/components/schemas/Job"
 
   # ---------------------------------------------------------------------------
   # Webhooks
@@ -1011,55 +1019,6 @@ components:
         JWT access token obtained from `POST /api/auth/login`.
         Pass as `Authorization: Bearer <token>`.
 
-  parameters:
-    CursorParam:
-      name: cursor
-      in: query
-      required: false
-      schema:
-        type: string
-      description: |
-        Opaque base64-encoded cursor returned by the previous page as `nextCursor`.
-        Omit on the first request.
-
-    LimitParam:
-      name: limit
-      in: query
-      required: false
-      schema:
-        type: integer
-        default: 20
-        minimum: 1
-        maximum: 100
-      description: Maximum number of items to return per page (default 20, max 100).
-
-  schemas:
-    PaginatedResponse:
-      type: object
-      description: Generic wrapper for all cursor-paginated list responses.
-      required: [data, nextCursor]
-      properties:
-        data:
-          type: array
-          items: {}
-          description: Page of items.
-        nextCursor:
-          type: string
-          nullable: true
-          description: |
-            Opaque cursor to pass as `?cursor=` on the next request.
-            `null` when there are no more pages.
-
-    PaginatedJobResponse:
-      allOf:
-        - $ref: "#/components/schemas/PaginatedResponse"
-        - type: object
-          properties:
-            data:
-              type: array
-              items:
-                $ref: "#/components/schemas/Job"
-
   schemas:
     LoginRequest:
       type: object
@@ -1229,23 +1188,28 @@ components:
 
     PortfolioResponse:
       type: object
-      required: [userId, totalBalance, data, nextCursor]
+      required: [userId, totalBalance, positions, pagination]
       properties:
         userId:
           type: string
           description: Authenticated wallet address (Stellar G... key).
         totalBalance:
           type: string
-          description: Sum of all underlying balances across positions in the current page.
-        data:
+          description: Sum of all underlying balances across positions.
+        positions:
           type: array
           items:
             $ref: "#/components/schemas/VaultPosition"
-          description: Page of vault positions.
-        nextCursor:
-          type: string
-          nullable: true
-          description: Opaque cursor for the next page. `null` when there are no more pages.
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    Pagination:
+      type: object
+      required: [page, pageSize, total]
+      properties:
+        page: { type: integer, example: 1 }
+        pageSize: { type: integer, example: 20 }
+        total: { type: integer, example: 1 }
 
     YieldSource:
       type: object
@@ -1316,7 +1280,7 @@ components:
 
     YieldStatsResponse:
       type: object
-      required: [workerRunning, data, nextCursor]
+      required: [workerRunning]
       properties:
         workerRunning:
           type: boolean
@@ -1324,16 +1288,12 @@ components:
           type: object
           nullable: true
           additionalProperties: true
-        data:
+        history:
           type: array
-          description: Current page of historical run records.
+          nullable: true
           items:
             type: object
             additionalProperties: true
-        nextCursor:
-          type: string
-          nullable: true
-          description: Opaque cursor for the next page. `null` when there are no more pages.
 
     GasFeeOption:
       type: object
@@ -1367,18 +1327,13 @@ components:
 
     GasHistoryResponse:
       type: object
-      required: [chainId, data, nextCursor]
+      required: [chainId, history]
       properties:
         chainId: { type: integer }
-        data:
+        history:
           type: array
-          description: Current page of gas price samples.
           items:
             $ref: "#/components/schemas/GasPriceEstimate"
-        nextCursor:
-          type: string
-          nullable: true
-          description: Opaque cursor for the next page. `null` when there are no more pages.
 
     WithdrawalRequest:
       type: object
