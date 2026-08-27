@@ -1571,3 +1571,330 @@ fn test_harvest_zero_from_uninit_returns_zero_amount() {
     let result = vault.try_harvest(&keeper, &0);
     assert_eq!(result, Err(Ok(VaultError::ZeroAmount)));
 }
+
+// ===========================================================================
+// #358 — TVL cap tests
+// ===========================================================================
+
+#[test]
+fn test_tvl_cap_default_is_zero_unlimited() {
+    let (_env, vault, _admin, _token) = setup();
+    assert_eq!(vault.tvl_cap(), 0);
+}
+
+#[test]
+fn test_set_tvl_cap_stores_value() {
+    let (_env, vault, admin, _token) = setup();
+    vault.set_tvl_cap(&1_000_000);
+    assert_eq!(vault.tvl_cap(), 1_000_000);
+    let _ = admin;
+}
+
+#[test]
+fn test_tvl_cap_emits_event_and_allows_deposit_up_to_cap() {
+    let (env, vault, admin, token) = setup();
+    vault.set_tvl_cap(&500_000);
+
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 500_000);
+    let shares = vault.deposit(&user, &500_000);
+    assert!(shares > 0);
+    assert_eq!(vault.total_assets(), 500_000);
+}
+
+#[test]
+fn test_deposit_exceeds_tvl_cap_returns_error() {
+    let (env, vault, admin, token) = setup();
+    vault.set_tvl_cap(&300_000);
+
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 500_000);
+    let result = vault.try_deposit(&user, &500_000);
+    assert_eq!(result, Err(Ok(VaultError::TvlCapExceeded)));
+}
+
+#[test]
+fn test_tvl_cap_zero_means_unlimited() {
+    let (env, vault, admin, token) = setup();
+    vault.set_tvl_cap(&0); // explicitly set to 0 = unlimited
+
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 10_000_000);
+    let shares = vault.deposit(&user, &10_000_000);
+    assert!(shares > 0);
+}
+
+#[test]
+fn test_partial_deposit_under_cap_succeeds() {
+    let (env, vault, admin, token) = setup();
+    vault.set_tvl_cap(&1_000_000);
+
+    // First deposit 600k (under cap)
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 1_200_000);
+    vault.deposit(&user, &600_000);
+
+    // Second deposit of 400k (total = 1M, exactly at cap) should succeed
+    let result = vault.try_deposit(&user, &400_000);
+    assert!(result.is_ok());
+
+    // Third deposit of 1 (total would be 1M+1, over cap) should fail
+    let result2 = vault.try_deposit(&user, &1);
+    assert_eq!(result2, Err(Ok(VaultError::TvlCapExceeded)));
+}
+
+// ===========================================================================
+// #359 — On-chain fee accounting tests
+// ===========================================================================
+
+#[test]
+fn test_accrued_fees_default_zero() {
+    let (_env, vault, _admin, _token) = setup();
+    assert_eq!(vault.accrued_fees(), 0);
+}
+
+#[test]
+fn test_harvest_accrues_fees_excluded_from_total_assets() {
+    let (env, vault, admin, token) = setup();
+
+    // Seed vault
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 1_000_000);
+    vault.deposit(&user, &1_000_000);
+
+    // harvest 100_000 with default 10% perf fee → fee = 10_000, yield_after = 90_000
+    mint(&env, &token, &admin, &admin, 100_000);
+    vault.harvest(&admin, &100_000);
+
+    assert_eq!(vault.accrued_fees(), 10_000);
+    // total_assets excludes accrued fees
+    assert_eq!(vault.total_assets(), 1_090_000);
+}
+
+#[test]
+fn test_claim_fees_transfers_to_recipient_and_zeroes_accrued() {
+    let (env, vault, admin, token) = setup();
+
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 1_000_000);
+    vault.deposit(&user, &1_000_000);
+
+    mint(&env, &token, &admin, &admin, 100_000);
+    vault.harvest(&admin, &100_000);
+
+    let fees_before = vault.accrued_fees();
+    assert_eq!(fees_before, 10_000);
+
+    let recipient = Address::generate(&env);
+    let claimed = vault.claim_fees(&recipient);
+    assert_eq!(claimed, 10_000);
+    assert_eq!(vault.accrued_fees(), 0);
+
+    // Recipient token balance should be 10_000
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(token_client.balance(&recipient), 10_000);
+}
+
+#[test]
+fn test_claim_fees_no_fees_returns_error() {
+    let (_env, vault, admin, _token) = setup();
+    let result = vault.try_claim_fees(&admin);
+    assert_eq!(result, Err(Ok(VaultError::NoFeesToClaim)));
+}
+
+#[test]
+fn test_total_assets_excludes_accrued_fees() {
+    let (env, vault, admin, token) = setup();
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 1_000_000);
+    vault.deposit(&user, &1_000_000);
+
+    // Multiple harvests accumulate fees
+    mint(&env, &token, &admin, &admin, 200_000);
+    vault.harvest(&admin, &100_000);
+    vault.harvest(&admin, &100_000);
+
+    // Each 100k harvest: 10k fee, 90k to total_assets
+    assert_eq!(vault.accrued_fees(), 20_000);
+    assert_eq!(vault.total_assets(), 1_180_000);
+}
+
+// ===========================================================================
+// #361 — KYC / deposit allowlist tests
+// ===========================================================================
+
+#[test]
+fn test_kyc_disabled_by_default_allows_all_deposits() {
+    let (env, vault, admin, token) = setup();
+    // KYC is off by default — any user can deposit
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 100_000);
+    let shares = vault.deposit(&user, &100_000);
+    assert!(shares > 0);
+}
+
+#[test]
+fn test_kyc_enabled_blocks_unapproved_address() {
+    let (env, vault, admin, token) = setup();
+
+    // Enable KYC and set a verifier
+    let verifier = Address::generate(&env);
+    vault.set_kyc_verifier(&verifier);
+    vault.set_kyc_enabled(&true);
+
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 100_000);
+    let result = vault.try_deposit(&user, &100_000);
+    assert_eq!(result, Err(Ok(VaultError::KycNotApproved)));
+}
+
+#[test]
+fn test_kyc_approved_address_can_deposit() {
+    let (env, vault, admin, token) = setup();
+
+    let verifier = Address::generate(&env);
+    vault.set_kyc_verifier(&verifier);
+    vault.set_kyc_enabled(&true);
+
+    let user = Address::generate(&env);
+    // Approve with far-future expiry
+    vault.approve_address(&user, &u64::MAX);
+
+    mint(&env, &token, &admin, &user, 100_000);
+    let shares = vault.deposit(&user, &100_000);
+    assert!(shares > 0);
+}
+
+#[test]
+fn test_kyc_revoked_address_cannot_deposit() {
+    let (env, vault, admin, token) = setup();
+
+    let verifier = Address::generate(&env);
+    vault.set_kyc_verifier(&verifier);
+    vault.set_kyc_enabled(&true);
+
+    let user = Address::generate(&env);
+    vault.approve_address(&user, &u64::MAX);
+    vault.revoke_address(&user);
+
+    mint(&env, &token, &admin, &user, 100_000);
+    let result = vault.try_deposit(&user, &100_000);
+    assert_eq!(result, Err(Ok(VaultError::KycNotApproved)));
+}
+
+#[test]
+fn test_kyc_expired_approval_blocks_deposit() {
+    let (env, vault, admin, token) = setup();
+
+    let verifier = Address::generate(&env);
+    vault.set_kyc_verifier(&verifier);
+    vault.set_kyc_enabled(&true);
+
+    let user = Address::generate(&env);
+    // Set expiry to ledger timestamp 0 (already expired)
+    vault.approve_address(&user, &0u64);
+
+    mint(&env, &token, &admin, &user, 100_000);
+    let result = vault.try_deposit(&user, &100_000);
+    assert_eq!(result, Err(Ok(VaultError::KycExpired)));
+}
+
+#[test]
+fn test_kyc_disabled_allows_previously_unapproved_address() {
+    let (env, vault, admin, token) = setup();
+
+    let verifier = Address::generate(&env);
+    vault.set_kyc_verifier(&verifier);
+    vault.set_kyc_enabled(&true);
+
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 100_000);
+
+    // Blocked with KYC on
+    assert!(vault.try_deposit(&user, &100_000).is_err());
+
+    // Disable KYC — now anyone can deposit
+    vault.set_kyc_enabled(&false);
+    let shares = vault.deposit(&user, &100_000);
+    assert!(shares > 0);
+}
+
+// ===========================================================================
+// #360 — Pause countdown with scheduled unpause tests
+// ===========================================================================
+
+#[test]
+fn test_pause_until_sets_pause_and_expiry() {
+    let (env, vault, _admin, _token) = setup();
+    let future_ts = env.ledger().timestamp() + 1000;
+    vault.pause_until(&future_ts);
+
+    assert!(vault.is_paused());
+    assert_eq!(vault.pause_expires_at(), Some(future_ts));
+}
+
+#[test]
+fn test_pause_expires_at_none_when_not_scheduled() {
+    let (_env, vault, _admin, _token) = setup();
+    assert_eq!(vault.pause_expires_at(), None);
+}
+
+#[test]
+fn test_manual_unpause_clears_scheduled_expiry() {
+    let (env, vault, _admin, _token) = setup();
+    let future_ts = env.ledger().timestamp() + 1000;
+    vault.pause_until(&future_ts);
+    vault.unpause();
+
+    assert!(!vault.is_paused());
+    assert_eq!(vault.pause_expires_at(), None);
+}
+
+#[test]
+fn test_auto_unpause_on_deposit_after_expiry() {
+    let (env, vault, admin, token) = setup();
+
+    // Schedule unpause at current_ts + 1
+    let future_ts = env.ledger().timestamp() + 1;
+    vault.pause_until(&future_ts);
+    assert!(vault.is_paused());
+
+    // Advance ledger timestamp past the expiry
+    env.ledger().with_mut(|li| {
+        li.timestamp = future_ts + 1;
+    });
+
+    // deposit should auto-unpause and succeed
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 100_000);
+    let shares = vault.deposit(&user, &100_000);
+    assert!(shares > 0);
+    assert!(!vault.is_paused());
+    assert_eq!(vault.pause_expires_at(), None);
+}
+
+#[test]
+fn test_pause_until_blocks_deposit_before_expiry() {
+    let (env, vault, admin, token) = setup();
+
+    let future_ts = env.ledger().timestamp() + 10_000;
+    vault.pause_until(&future_ts);
+
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 100_000);
+    let result = vault.try_deposit(&user, &100_000);
+    assert_eq!(result, Err(Ok(VaultError::VaultPaused)));
+}
+
+#[test]
+fn test_manual_pause_clears_scheduled_unpause() {
+    let (env, vault, _admin, _token) = setup();
+    let future_ts = env.ledger().timestamp() + 1000;
+    vault.pause_until(&future_ts);
+    assert_eq!(vault.pause_expires_at(), Some(future_ts));
+
+    // Calling pause() again clears the scheduled expiry
+    vault.pause();
+    assert_eq!(vault.pause_expires_at(), None);
+    assert!(vault.is_paused());
+}
