@@ -1,0 +1,76 @@
+{
+  "nav": {
+    "faq": "FAQ",
+    "settings": "Settings"
+  },
+  "home": {
+    "get_started": "To get started, edit the page.tsx file.",
+    "instructions": "Looking for a starting point or more instructions? Head over to",
+    "templates": "Templates",
+    "or_the": "or the",
+    "learning_center": "Learning Center",
+    "deploy_now": "Deploy Now",
+    "documentation": "Documentation"
+  },
+  "faq": {
+    "title": "Frequently Asked Questions",
+    "subtitle": "Everything you need to know about Aura Vault Protocol.",
+    "search_placeholder": "Search questions…",
+    "all_categories": "All",
+    "no_results": "No results found.",
+    "cant_find": "Can't find your answer?",
+    "open_issue": "Open a GitHub issue"
+  },
+  "settings": {
+    "title": "Settings",
+    "saved": "Settings saved",
+    "appearance": {
+      "title": "Appearance",
+      "description": "Choose your preferred color theme."
+    },
+    "wallet": {
+      "title": "Connected Wallet",
+      "no_wallet": "No wallet connected",
+      "connect": "Connect Wallet"
+    },
+    "slippage": {
+      "title": "Slippage Tolerance",
+      "high_warning": "High slippage may result in unfavorable trades"
+    },
+    "notifications": {
+      "title": "Notifications",
+      "deposits": "Deposit confirmations",
+      "withdrawals": "Withdrawal confirmations",
+      "vault_events": "Vault performance alerts",
+      "email": "Email notifications",
+      "email_address": "Email address",
+      "email_placeholder": "you@example.com"
+    },
+    "security": {
+      "title": "Security",
+      "two_factor": "Two-Factor Authentication",
+      "two_factor_desc": "Add an extra layer of security"
+    },
+    "danger": {
+      "title": "Danger Zone",
+      "description": "Deactivating your account will remove all data and cannot be undone.",
+      "deactivate": "Deactivate Account",
+      "confirm_message": "Are you sure? This action is irreversible.",
+      "cancel": "Cancel",
+      "confirm": "Confirm Deactivation"
+    }
+  },
+  "notifications": {
+    "title": "Notifications",
+    "mark_all_read": "Mark all read",
+    "clear": "Clear",
+    "empty": "No notifications",
+    "unread_aria": "Notifications, {{count}} unread",
+    "dismiss": "Dismiss notification"
+  },
+  "theme": {
+    "light": "Light",
+    "dark": "Dark",
+    "auto": "Auto"
+  }
+}

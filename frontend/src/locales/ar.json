@@ -1,0 +1,76 @@
+{
+  "nav": {
+    "faq": "الأسئلة الشائعة",
+    "settings": "الإعدادات"
+  },
+  "home": {
+    "get_started": "للبدء، قم بتعديل ملف page.tsx.",
+    "instructions": "تبحث عن نقطة انطلاق أو مزيد من التعليمات؟ توجه إلى",
+    "templates": "القوالب",
+    "or_the": "أو إلى",
+    "learning_center": "مركز التعلم",
+    "deploy_now": "نشر الآن",
+    "documentation": "التوثيق"
+  },
+  "faq": {
+    "title": "الأسئلة الشائعة",
+    "subtitle": "كل ما تحتاج معرفته حول Aura Vault Protocol.",
+    "search_placeholder": "ابحث عن أسئلة…",
+    "all_categories": "الكل",
+    "no_results": "لا توجد نتائج.",
+    "cant_find": "لم تجد إجابتك؟",
+    "open_issue": "افتح مشكلة على GitHub"
+  },
+  "settings": {
+    "title": "الإعدادات",
+    "saved": "تم حفظ الإعدادات",
+    "appearance": {
+      "title": "المظهر",
+      "description": "اختر نسق الألوان المفضل لديك."
+    },
+    "wallet": {
+      "title": "المحفظة المتصلة",
+      "no_wallet": "لا توجد محفظة متصلة",
+      "connect": "ربط المحفظة"
+    },
+    "slippage": {
+      "title": "تفاوت الانزلاق",
+      "high_warning": "قد يؤدي الانزلاق العالي إلى صفقات غير مواتية"
+    },
+    "notifications": {
+      "title": "الإشعارات",
+      "deposits": "تأكيدات الإيداع",
+      "withdrawals": "تأكيدات السحب",
+      "vault_events": "تنبيهات أداء الخزنة",
+      "email": "إشعارات البريد الإلكتروني",
+      "email_address": "عنوان البريد الإلكتروني",
+      "email_placeholder": "you@example.com"
+    },
+    "security": {
+      "title": "الأمان",
+      "two_factor": "المصادقة الثنائية",
+      "two_factor_desc": "أضف طبقة أمان إضافية"
+    },
+    "danger": {
+      "title": "المنطقة الخطرة",
+      "description": "إلغاء تنشيط حسابك سيحذف جميع البيانات ولا يمكن التراجع عنه.",
+      "deactivate": "إلغاء تنشيط الحساب",
+      "confirm_message": "هل أنت متأكد؟ هذا الإجراء لا رجعة فيه.",
+      "cancel": "إلغاء",
+      "confirm": "تأكيد إلغاء التنشيط"
+    }
+  },
+  "notifications": {
+    "title": "الإشعارات",
+    "mark_all_read": "تحديد الكل كمقروء",
+    "clear": "مسح",
+    "empty": "لا توجد إشعارات",
+    "unread_aria": "الإشعارات، {{count}} غير مقروءة",
+    "dismiss": "رفض الإشعار"
+  },
+  "theme": {
+    "light": "فاتح",
+    "dark": "داكن",
+    "auto": "تلقائي"
+  }
+}
