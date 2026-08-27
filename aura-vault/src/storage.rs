@@ -49,6 +49,12 @@ pub enum DataKey {
     WithdrawalNextId,
     /// Individual withdrawal queue entry keyed by queue ID.
     WithdrawalEntry(u64),
+    // -----------------------------------------------------------------------
+    // Circuit breaker — share-price movement limit (Issue #371)
+    // -----------------------------------------------------------------------
+    /// Maximum allowed share-price movement per harvest, in basis points.
+    /// 0 = check disabled. Covers both up and down movements.
+    PriceMovementLimit,
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -388,6 +394,25 @@ pub fn set_withdrawal_entry(env: &Env, id: u64, entry: &WithdrawalEntry) {
 /// Remove a withdrawal queue entry (after claim).
 pub fn remove_withdrawal_entry(env: &Env, id: u64) {
     env.storage().persistent().remove(&DataKey::WithdrawalEntry(id));
+}
+
+// ---------------------------------------------------------------------------
+// Circuit-breaker helpers (instance storage) — Issue #371
+// ---------------------------------------------------------------------------
+
+/// Maximum allowed share-price movement per harvest, in basis points.
+/// 0 = check disabled.  Applies symmetrically to upward and downward moves.
+pub fn get_price_movement_limit(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::PriceMovementLimit)
+        .unwrap_or(0)
+}
+
+pub fn set_price_movement_limit(env: &Env, bps: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PriceMovementLimit, &bps);
 }
 
 /// A single entry in the withdrawal queue.

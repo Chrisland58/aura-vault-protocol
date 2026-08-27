@@ -309,6 +309,31 @@ pub trait AuraVaultTrait {
     /// Return the timestamp of the last successful harvest.
     fn last_harvest_time(env: Env) -> u64;
 
+    // -----------------------------------------------------------------------
+    // Circuit breaker — share-price movement limit (Issue #371)
+    // -----------------------------------------------------------------------
+
+    /// Set the maximum allowed share-price movement per harvest, in basis points.
+    ///
+    /// Admin-only. `0` disables the check. When a harvest would move the share
+    /// price by more than `bps` basis points (up **or** down), the vault
+    /// auto-pauses and emits a `suspicious` / `price_movement` event.
+    /// The admin must call [`unpause`] after reviewing.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    ///
+    /// [`unpause`]: AuraVaultTrait::unpause
+    fn set_price_movement_limit(env: Env, admin: Address, bps: u32) -> Result<(), VaultError>;
+
+    /// Read the current share-price movement limit in basis points.
+    ///
+    /// Returns `0` when the circuit breaker is disabled.
+    /// Read-only; no authorization required.
+    fn get_price_movement_limit(env: Env) -> u32;
+
     /// Returns the total underlying tokens currently tracked by the vault
     /// (`total_deposited`), in the underlying token's smallest unit.
     ///

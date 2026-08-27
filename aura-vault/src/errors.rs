@@ -84,4 +84,7 @@ pub enum VaultError {
     QueueUnbondingPending  = 22,
     /// Withdrawal fee rate exceeds the allowed maximum
     InvalidWithdrawalFee   = 23,
+    /// Share price moved more than the configured basis-point limit in a single
+    /// harvest; the vault has been auto-paused pending admin review.
+    CircuitBreakerTripped  = 24,
 }

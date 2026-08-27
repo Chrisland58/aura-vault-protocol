@@ -57,6 +57,7 @@ mod harvest_cooldown_test;
 #[cfg(test)]
 mod pause_lifecycle_test;
 #[cfg(test)]
+mod circuit_breaker_test;#[cfg(test)]
 mod event_test;
 #[cfg(test)]
 mod event_snapshots;
@@ -84,8 +85,7 @@ use storage::{
     get_withdrawal_fee_bps, set_withdrawal_fee_bps,
     get_withdrawal_next_id, set_withdrawal_next_id,
     get_withdrawal_entry, set_withdrawal_entry, remove_withdrawal_entry,
-};
-use governance::{
+};use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
     get_proposal_status, ProposalStatus, ProposalType,
 };
@@ -795,6 +795,54 @@ impl AuraVault {
         let new_total = total_deposited
             .checked_add(yield_after_fee)
             .ok_or(VaultError::MathOverflow)?;
+
+        // -----------------------------------------------------------------------
+        // Circuit-breaker check — Issue #371
+        //
+        // Share price is represented as total_deposited / total_shares (in
+        // underlying token units per share).  We compare old_price vs new_price
+        // using cross-multiplication to stay integer-only and avoid division.
+        //
+        //   old_price = total_deposited / total_shares
+        //   new_price = new_total       / total_shares
+        //
+        // A limit of L bps means:
+        //   price_delta / old_price > L / 10_000
+        //
+        // Which is equivalent (via cross-multiplication):
+        //   |new_total - total_deposited| * 10_000 > total_deposited * L
+        //
+        // L == 0 disables the check.
+        // -----------------------------------------------------------------------
+        let price_limit_bps = storage::get_price_movement_limit(&env);
+        if price_limit_bps > 0 && total_deposited > 0 {
+            let delta = new_total
+                .checked_sub(total_deposited)
+                .ok_or(VaultError::MathOverflow)?
+                .abs();
+            // delta * 10_000 > total_deposited * price_limit_bps
+            let lhs = delta
+                .checked_mul(10_000)
+                .ok_or(VaultError::MathOverflow)?;
+            let rhs = total_deposited
+                .checked_mul(price_limit_bps as i128)
+                .ok_or(VaultError::MathOverflow)?;
+            if lhs > rhs {
+                // Auto-pause and emit event before returning the error.
+                set_paused(&env, true);
+                env.events().publish(
+                    (Symbol::new(&env, "suspicious"),),
+                    (
+                        Symbol::new(&env, "price_movement"),
+                        total_deposited,
+                        new_total,
+                        price_limit_bps,
+                    ),
+                );
+                bump_instance(&env);
+                return Err(VaultError::CircuitBreakerTripped);
+            }
+        }
 
         // Interaction: pull yield tokens into vault
         token.transfer(&caller, &env.current_contract_address(), &yield_amount);
@@ -1645,6 +1693,52 @@ impl AuraVault {
     /// Read the timestamp of the last successful harvest.
     pub fn last_harvest_time(env: Env) -> u64 {
         get_last_harvest_time(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // Circuit breaker — share-price movement limit (Issue #371)
+    // -----------------------------------------------------------------------
+
+    /// Set the maximum allowed share-price movement per harvest, in basis points.
+    ///
+    /// Admin-only.  When the price change in a single harvest exceeds this
+    /// threshold the vault is automatically paused and a `suspicious` event is
+    /// emitted.  The admin must manually call [`unpause`] after reviewing.
+    ///
+    /// # Basis-point reference
+    ///
+    /// | `bps` | Meaning |
+    /// |---|---|
+    /// | `0` | Disabled — no movement check |
+    /// | `500` | 5 % movement triggers the circuit breaker |
+    /// | `2000` | 20 % movement triggers the circuit breaker |
+    ///
+    /// The check is symmetric: abnormally large *and* abnormally small price
+    /// changes both trip the breaker.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    ///
+    /// [`unpause`]: AuraVault::unpause
+    pub fn set_price_movement_limit(env: Env, admin: Address, bps: u32) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        storage::set_price_movement_limit(&env, bps);
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Read the current share-price movement limit in basis points.
+    ///
+    /// Returns `0` when the circuit breaker is disabled.
+    /// Read-only; no authorization required.
+    pub fn get_price_movement_limit(env: Env) -> u32 {
+        storage::get_price_movement_limit(&env)
     }
 
     // -----------------------------------------------------------------------
