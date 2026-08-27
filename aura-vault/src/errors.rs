@@ -84,4 +84,15 @@ pub enum VaultError {
     QueueUnbondingPending  = 22,
     /// Withdrawal fee rate exceeds the allowed maximum
     InvalidWithdrawalFee   = 23,
+    /// A token.transfer cross-contract call did not move the expected amount
+    /// (post-transfer balance assertion failed).
+    TransferFailed         = 24,
+    /// Oracle price is zero — feed returned a nonsensical value.
+    OraclePriceZero        = 25,
+    /// Oracle price exceeds the sanity-cap (unreasonably large value that
+    /// may indicate a manipulation attempt or mis-configured feed).
+    OraclePriceTooHigh     = 26,
+    /// Oracle data is stale: the `updated_at` timestamp is older than the
+    /// configured maximum age.
+    OraclePriceStale       = 27,
 }
