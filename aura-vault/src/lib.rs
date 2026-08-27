@@ -1951,4 +1951,56 @@ impl AuraVault {
             }
         })
     }
+
+    // -----------------------------------------------------------------------
+    // get_vault_error_message — ABI-exposed error string lookup (Issue #370)
+    // -----------------------------------------------------------------------
+
+    /// Return the human-readable English message for a given [`VaultError`]
+    /// discriminant, or `None` if the code is not a known variant.
+    ///
+    /// Included in the contract ABI so that wallet and explorer UIs can query
+    /// error descriptions directly without bundling a separate message table.
+    /// The returned string is identical to [`VaultError::message`] for the
+    /// corresponding variant.
+    ///
+    /// Read-only view; no authorisation required.
+    ///
+    /// # Parameters
+    ///
+    /// - `code` — Numeric discriminant (1–24) of a [`VaultError`] variant.
+    ///
+    /// # Returns
+    ///
+    /// `Some(message)` for a recognised code, `None` otherwise.
+    pub fn get_vault_error_message(env: Env, code: u32) -> Option<soroban_sdk::String> {
+        let msg: Option<&'static str> = match code {
+            1  => Some(VaultError::NotInitialized.message()),
+            2  => Some(VaultError::AlreadyInitialized.message()),
+            3  => Some(VaultError::InsufficientShares.message()),
+            4  => Some(VaultError::InsufficientUnderlying.message()),
+            5  => Some(VaultError::ZeroAmount.message()),
+            6  => Some(VaultError::MathOverflow.message()),
+            7  => Some(VaultError::InvalidAddress.message()),
+            8  => Some(VaultError::ZeroShares.message()),
+            9  => Some(VaultError::UpgradeUnauthorized.message()),
+            10 => Some(VaultError::StorageLayoutMismatch.message()),
+            11 => Some(VaultError::VaultPaused.message()),
+            12 => Some(VaultError::BalanceMismatch.message()),
+            13 => Some(VaultError::TimelockNotExpired.message()),
+            14 => Some(VaultError::NotApproved.message()),
+            15 => Some(VaultError::AlreadyVoted.message()),
+            16 => Some(VaultError::TvlCapExceeded.message()),
+            17 => Some(VaultError::YieldTooSmall.message()),
+            18 => Some(VaultError::DistributionAccuracyError.message()),
+            19 => Some(VaultError::HarvestCooldown.message()),
+            20 => Some(VaultError::WithdrawalQueued.message()),
+            21 => Some(VaultError::QueueEntryNotFound.message()),
+            22 => Some(VaultError::QueueUnbondingPending.message()),
+            23 => Some(VaultError::InvalidWithdrawalFee.message()),
+            24 => Some(VaultError::CircuitBreakerTripped.message()),
+            _  => None,
+        };
+        msg.map(|s| soroban_sdk::String::from_str(&env, s))
+    }
 }

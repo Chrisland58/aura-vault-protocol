@@ -480,4 +480,25 @@ pub trait AuraVaultTrait {
     /// - `env` — Soroban execution environment.
     /// - `proposal_id` — ID of the proposal to query.
     fn proposal_status(env: Env, proposal_id: u64) -> Option<String>;
+
+    /// Return the human-readable English message for a given [`VaultError`]
+    /// code, or `None` if the code does not correspond to a known variant.
+    ///
+    /// This is a pure view function included in the contract ABI so that
+    /// wallet and explorer UIs can query error descriptions on-chain without
+    /// bundling a separate message table. The returned string matches the
+    /// value of [`VaultError::message`] for the corresponding variant.
+    ///
+    /// Read-only; no authorization required.
+    ///
+    /// # Parameters
+    ///
+    /// - `env` — Soroban execution environment.
+    /// - `code` — The numeric discriminant of a [`VaultError`] variant
+    ///   (e.g. `11` for [`VaultError::VaultPaused`]).
+    ///
+    /// # Returns
+    ///
+    /// `Some(message)` for a recognised code, `None` otherwise.
+    fn get_vault_error_message(env: Env, code: u32) -> Option<String>;
 }
