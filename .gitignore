@@ -2,3 +2,16 @@ target/
 Cargo.lock
 .DS_Store
 *.wasm
+
+# Node
+node_modules/
+package-lock.json
+
+*storybook.log
+storybook-static
+
+# Local secrets must remain untracked.
+.env
+.env.*
+!.env.example
+!*.env.example
