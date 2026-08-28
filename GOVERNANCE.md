@@ -1,383 +1,144 @@
-# Aura Vault — Governance Documentation & Voting Guide
-
-> **Issue**: #409  
-> **Version**: 0.2.0  
-> **Last Updated**: 2026-08-28
-
----
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Governance Participants](#governance-participants)
-3. [Proposal Lifecycle](#proposal-lifecycle)
-4. [Creating a Proposal](#creating-a-proposal)
-5. [Voting Power Calculation](#voting-power-calculation)
-6. [Quorum and Approval Thresholds](#quorum-and-approval-thresholds)
-7. [Timelock](#timelock)
-8. [Step-by-Step: Participating via UI](#step-by-step-participating-via-ui)
-9. [Step-by-Step: Participating via Contract](#step-by-step-participating-via-contract)
-10. [What Can Be Governed](#what-can-be-governed)
-11. [Emergency Actions](#emergency-actions)
-12. [Governance Roadmap](#governance-roadmap)
-
----
+# Multi-Signature Governance for Aura Vault Protocol
 
 ## Overview
 
-Aura Vault governance allows **vault share holders** to collectively control protocol parameters, fee settings, contract upgrades, and treasury management. Governance is designed to be progressive — starting with admin multisig and evolving toward full on-chain token governance as the protocol matures.
+This module implements a 3-of-5 multi-signature governance system for protocol changes in the Aura Vault. It provides transparent voting, timelock delays, and prevents unilateral changes to critical parameters.
 
-### Current Governance Stage (v0.2.0)
+## Architecture
 
-**Stage 1 — Admin Multisig**
+### Core Components
 
-All protocol changes are currently controlled by a 3-of-5 admin multisig. Major changes (fee adjustments, contract upgrades) require a public comment period of at least 7 days before execution.
+1. **Multi-Sig Wallet** — 5 signers, 3 required for approval
+2. **Proposal System** — Three proposal types for different changes
+3. **24-Hour Timelock** — Prevents immediate execution after approval
+4. **Vote Tracking** — Transparent voting history and signatures
+5. **Event Logging** — Full audit trail of governance actions
 
-The path to on-chain governance is documented in the [Governance Roadmap](#governance-roadmap) section. Share holders can participate in off-chain signalling at any time using GitHub Discussions or community calls.
+## Proposal Types
 
----
-
-## Governance Participants
-
-### Admin (Multisig)
-
-- **Who**: A 3-of-5 multisig of founding contributors.
-- **Powers**: Execute all on-chain parameter changes, contract upgrades, treasury withdrawals.
-- **Constraints**: Cannot set fees outside the contract-enforced bounds (performance fee 10–20%, management fee 0–1%). Cannot change these bounds without deploying a new contract.
-
-### Vault Share Holders
-
-- **Who**: Any address holding Aura Vault shares (`balance_of(address) > 0`).
-- **Current powers**: Off-chain signalling via GitHub Discussions and community calls.
-- **Future powers**: On-chain proposal creation and voting (see [Governance Roadmap](#governance-roadmap)).
-
-### Keepers
-
-- **Who**: Anyone who calls `harvest()`.
-- **Powers**: Trigger yield injection (permissionless). No governance power.
-
-### Integrators
-
-- **Who**: Protocols or individuals who build on top of Aura Vault.
-- **Powers**: Off-chain signalling. No on-chain governance power in the current stage.
-
----
+```rust
+pub enum ProposalType {
+    UpdateAdmin,                           // Change vault admin
+    UpdateUnderlyingToken,                 // Change underlying token
+    UpdateParameter { name, value },       // Generic parameter updates
+}
+```
 
 ## Proposal Lifecycle
 
-```
-DRAFT → OPEN FOR COMMENT → VOTING → TIMELOCK → EXECUTED
-                                  ↘ DEFEATED
-                                  ↘ CANCELLED
-```
+1. **Creation** — Signer proposes change (id increments automatically)
+2. **Voting** — Other signers vote approve/reject (no double voting)
+3. **Approval** — Auto-approval when 3+ signatures approve
+4. **Timelock** — 24-hour delay after approval
+5. **Execution** — Any address can execute after timelock expires
 
-| Stage | Duration | Description |
-|---|---|---|
-| **Draft** | Unlimited | Author refines the proposal in GitHub Discussions |
-| **Open for Comment** | ≥ 7 days | Public comment period; community feedback |
-| **Voting** | 5 days | (On-chain governance) Votes cast by share holders |
-| **Timelock** | 48 hours | Mandatory delay between approval and execution |
-| **Executed** | — | Admin (or on-chain executor) applies the change |
-| **Defeated** | — | Did not reach quorum or approval threshold |
-| **Cancelled** | — | Author or admin withdraws before execution |
-
----
-
-## Creating a Proposal
-
-### Off-Chain Proposal (Current Process)
-
-1. **Open a GitHub Discussion** in the `governance` category at:  
-   `https://github.com/soterika/aura-vault-protocol/discussions`
-
-2. **Use the proposal template**:
-
-   ```markdown
-   ## Proposal: [Short Title]
-
-   **Type**: [Fee Change | Contract Upgrade | Treasury | Parameter Change]
-   **Author**: [Your GitHub username or Stellar address]
-   **Status**: Draft
-
-   ### Summary
-   One paragraph describing what the proposal does and why.
-
-   ### Motivation
-   Why is this change needed? What problem does it solve?
-
-   ### Specification
-   Exact on-chain call(s) that would be made:
-   - Function: `set_fees(perf_fee_bps=1500, mgmt_fee_bps=50)`
-   - Network: mainnet
-   - Contract: <CONTRACT_ID>
-
-   ### Risks & Mitigations
-   What could go wrong and how it is mitigated.
-
-   ### Voting Options
-   - For: Apply the change as specified.
-   - Against: Keep current parameters.
-   - Abstain: No preference.
-   ```
-
-3. **Comment period**: The proposal must stay open for community comment for a minimum of **7 days**.
-
-4. **Admin review**: After the comment period, the multisig reviews and — if there is clear consensus — executes the change.
-
-5. **Execution announcement**: The admin posts the TX hash in the same Discussion thread.
-
-### On-Chain Proposal (Planned — See Roadmap)
-
-Once on-chain governance is deployed, proposals will be submitted directly via the governance contract. See [Step-by-Step: Participating via Contract](#step-by-step-participating-via-contract) for the planned flow.
-
----
-
-## Voting Power Calculation
-
-### Current Stage (Off-Chain)
-
-Voting weight is calculated by **vault share balance at snapshot time**. Snapshot is taken at the block height when the proposal enters the voting stage.
+### Status Flow
 
 ```
-voting_power(address) = balance_of(address) at snapshot_block
+Pending → (2 votes accumulate)
+       → Approved (3rd vote received)
+       → Executed (after 24h + execute call)
+       
+       → Rejected (if rejected outright or deadline passes)
 ```
 
-Shares represent proportional ownership of the vault, so voting power scales with economic stake.
+## Storage Model
 
-### Example
+All governance state stored in instance storage:
+- **Signers** — List of 5 authorized signers
+- **ProposalCount** — Total proposals created
+- **Proposals** — Individual proposal data with votes and status
+- **VoteRecord** — Prevents duplicate voting per proposal per signer
 
-```
-Total shares: 1,000,000
-Alice: 250,000 shares → 25% voting power
-Bob:   100,000 shares → 10% voting power
-Carol: 650,000 shares → 65% voting power
-```
+## Access Control
 
-### Delegation (Planned)
+- **Proposal Creation** — Only signers can propose changes
+- **Voting** — Only signers can vote; one vote per signer per proposal
+- **Execution** — Any address can execute after timelock (permissionless)
+- **Non-Signers** — Cannot propose or vote (InvalidAddress error)
 
-In the on-chain governance system, share holders will be able to delegate their voting power to another address without transferring shares:
+## Security Properties
 
-```bash
-# Delegate to another address
-stellar contract invoke \
-  --id <GOVERNANCE_CONTRACT_ID> \
-  --source <YOUR_KEYPAIR> \
-  --network mainnet \
-  -- delegate \
-  --delegatee <DELEGATEE_ADDRESS>
-```
+1. **No Unilateral Changes** — Requires 3 independent signatures
+2. **Vote Immutability** — Once recorded, vote cannot be changed
+3. **Timelock Safety** — 24-hour delay prevents flash attacks
+4. **Transparent History** — All signers tracked in proposal
+5. **Duplicate Protection** — Recording vote blocks second attempt
 
-Delegation is revocable at any time. Delegating to yourself reclaims your own voting power.
+## Error Handling
 
----
+| Error | Trigger |
+|-------|---------|
+| `InvalidAddress` | Non-signer proposes, votes, or proposes invalid address |
+| `TimelockNotExpired` | Execute called before 24-hour delay expires |
+| `NotApproved` | Execute called on non-approved proposal |
+| `AlreadyVoted` | Signer attempts second vote on same proposal |
 
-## Quorum and Approval Thresholds
+## Public Interface
 
-### Current Thresholds (Admin Multisig)
+```rust
+// Proposal creation (signer-only)
+fn propose_update_admin(proposer, new_admin) -> proposal_id
+fn propose_update_token(proposer, new_token) -> proposal_id
+fn propose_parameter_update(proposer, name, value) -> proposal_id
 
-| Change Type | Signers Required | Comment Period |
-|---|---|---|
-| Fee parameter change | 3 of 5 | 7 days |
-| Contract upgrade | 4 of 5 | 14 days |
-| Treasury withdrawal | 3 of 5 | 7 days |
-| Emergency pause | 2 of 5 | None (immediate) |
+// Voting (signer-only)
+fn vote(voter, proposal_id, approve) -> Result<()>
 
-### Planned On-Chain Thresholds
+// Execution (permissionless after timelock)
+fn execute(executor, proposal_id) -> Result<()>
 
-| Change Type | Quorum | Approval | Timelock |
-|---|---|---|---|
-| Fee parameter change | 10% of supply | >50% yes | 48 hours |
-| Contract upgrade | 20% of supply | >66% yes | 7 days |
-| Treasury withdrawal | 15% of supply | >60% yes | 48 hours |
-| Emergency pause | 5% of supply | >50% yes | None |
-| Threshold change | 30% of supply | >75% yes | 14 days |
-
-**Quorum** is the minimum percentage of total shares that must vote (for, against, or abstain) for the result to be binding.  
-**Approval** is the percentage of non-abstain votes that must be "for" to pass.
-
----
-
-## Timelock
-
-All non-emergency governance actions are subject to a **mandatory timelock** between approval and execution. This gives users time to exit the vault before a change they disagree with takes effect.
-
-### Timelock Periods
-
-| Action | Timelock |
-|---|---|
-| Fee change | 48 hours |
-| Treasury withdrawal | 48 hours |
-| Contract upgrade | 7 days |
-| Emergency pause | 0 (immediate) |
-
-### How Timelock Works
-
-1. A proposal is approved (meets quorum and approval threshold).
-2. The `execute_after` timestamp is set to `now + timelock_period`.
-3. Anyone can call `execute(proposal_id)` after this timestamp.
-4. The admin multisig (or on-chain executor) cannot execute before the timelock expires.
-5. During the timelock window, any user who disagrees can withdraw their shares.
-
----
-
-## Step-by-Step: Participating via UI
-
-> The governance UI is planned for a future release. The following describes the intended flow.
-
-### Viewing Proposals
-
-1. Navigate to the Aura Vault app at `https://app.aura-vault.dev`.
-2. Click **Governance** in the top navigation.
-3. Active proposals are displayed with their current vote counts, quorum progress, and time remaining.
-
-### Voting on a Proposal
-
-1. Connect your Stellar wallet (Freighter or compatible).
-2. Open the proposal you want to vote on.
-3. Review the specification, discussion, and risks.
-4. Click **Vote For**, **Vote Against**, or **Abstain**.
-5. Sign the transaction in your wallet. Your voting power equals your share balance at the snapshot block.
-6. Confirmation appears in the toast notification.
-
-### Creating a Proposal via UI
-
-1. Connect your wallet. You must hold at least **1,000 shares** (planned minimum) to create a proposal.
-2. Click **New Proposal**.
-3. Fill in: Title, Type, Summary, Specification (exact contract call), Motivation, and Risks.
-4. Click **Submit Proposal**. This posts it as a Draft.
-5. After your 7-day comment period, click **Open for Voting** to start the voting period.
-
----
-
-## Step-by-Step: Participating via Contract
-
-These commands use the Stellar CLI directly. Replace placeholders with actual values.
-
-### Check Your Voting Power
-
-```bash
-# Your share balance = your voting power at snapshot
-stellar contract invoke \
-  --id <VAULT_CONTRACT_ID> \
-  --network mainnet \
-  -- balance_of \
-  --address <YOUR_ADDRESS>
+// Query (public)
+fn proposal_status(proposal_id) -> Option<String>
 ```
 
-### Query Total Supply (for power percentage)
+## Example Flow
 
-```bash
-# Total shares outstanding
-stellar contract invoke \
-  --id <VAULT_CONTRACT_ID> \
-  --network mainnet \
-  -- total_assets
-# Note: total_shares is a separate storage query; use the block explorer for this.
+```
+1. Signer A calls: propose_update_admin(signer_a, new_admin_addr)
+   → Returns proposal_id = 1, status = "Pending"
+
+2. Signer B calls: vote(signer_b, 1, true)
+   → Proposal 1 still "Pending" (2/3 votes)
+
+3. Signer C calls: vote(signer_c, 1, true)
+   → Proposal 1 becomes "Approved" (3/3 votes, timelock starts)
+
+4. Wait 24 hours...
+
+5. Anyone calls: execute(executor, 1)
+   → Proposal 1 becomes "Executed", admin actually updated
 ```
 
-### Cast a Vote (Planned On-Chain Governance)
+## Constants
 
-```bash
-stellar contract invoke \
-  --id <GOVERNANCE_CONTRACT_ID> \
-  --source <YOUR_KEYPAIR> \
-  --network mainnet \
-  -- cast_vote \
-  --proposal_id <PROPOSAL_ID> \
-  --support 1   # 0=Against, 1=For, 2=Abstain
-```
+- `REQUIRED_SIGNATURES = 3` — Threshold for approval
+- `TIMELOCK_DURATION = 86400` — Seconds (24 hours)
 
-### Execute an Approved Proposal
+## Testing
 
-```bash
-# Anyone can call this after the timelock expires
-stellar contract invoke \
-  --id <GOVERNANCE_CONTRACT_ID> \
-  --source <ANY_KEYPAIR> \
-  --network mainnet \
-  -- execute \
-  --proposal_id <PROPOSAL_ID>
-```
+The module includes 8 comprehensive tests:
 
-### Cancel a Proposal (Author or Admin Only)
+1. `test_governance_init_with_signers` — Validates 5 signers initialized
+2. `test_propose_admin_update` — Signer can create proposal
+3. `test_non_signer_cannot_propose` — Non-signer rejected
+4. `test_vote_on_proposal` — Signer can vote
+5. `test_approval_with_three_votes` — Auto-approval at 3 votes
+6. `test_timelock_prevents_early_execution` — Cannot execute before 24h
+7. `test_parameter_proposal` — Generic parameter updates work
+8. `test_cannot_vote_twice` — Duplicate vote rejected
 
-```bash
-stellar contract invoke \
-  --id <GOVERNANCE_CONTRACT_ID> \
-  --source <AUTHOR_OR_ADMIN_KEYPAIR> \
-  --network mainnet \
-  -- cancel \
-  --proposal_id <PROPOSAL_ID>
-```
+## Integration
 
----
+The governance module integrates seamlessly with existing vault:
+- Initialize includes `signers: Vec<Address>` parameter
+- All vault operations already have access control enforced separately
+- Governance layer is independent and can be extended
 
-## What Can Be Governed
+## Future Enhancements
 
-### In Scope
-
-| Parameter | Current Value | Bounds |
-|---|---|---|
-| Performance fee (`perf_fee_bps`) | 1500 (15%) | 1000–2000 |
-| Management fee (`mgmt_fee_bps`) | 0 (0%) | 0–100 |
-| Treasury address | Multisig | Any valid address |
-| Contract upgrade (new WASM hash) | v0.2.0 | Admin + governance |
-| Emergency pause | Unpaused | Admin only |
-
-### Out of Scope (Not Governable)
-
-These properties are hard-coded in the contract and cannot be changed without deploying a new contract:
-
-- Maximum performance fee ceiling (20%)
-- Maximum management fee ceiling (1%)
-- Minimum performance fee floor (10%)
-- CEI ordering and flash loan guard logic
-- Overflow protection (`checked_mul`, `checked_div`)
-
----
-
-## Emergency Actions
-
-### Emergency Pause
-
-The admin can pause the vault immediately without a governance vote in the event of a detected exploit or critical vulnerability.
-
-```bash
-stellar contract invoke \
-  --id <CONTRACT_ID> \
-  --source <ADMIN_KEYPAIR> \
-  --network mainnet \
-  -- pause
-```
-
-While paused:
-- `deposit()` is blocked (returns `VaultError::VaultPaused`)
-- `withdraw()` is blocked (returns `VaultError::VaultPaused`)
-- `harvest()` is blocked (returns `VaultError::VaultPaused`)
-- Read operations (`total_assets`, `balance_of`, `is_paused`) remain available
-
-**Unpausing** requires a governance proposal and 48-hour timelock (unless the emergency was a false alarm, in which case the admin multisig can unpause with a 3-of-5 vote after posting an incident report).
-
-### Incident Response
-
-If you notice suspicious behavior:
-1. Report immediately in the `#security` channel or via email to `security@aura-vault.dev`.
-2. Do **not** share exploit details publicly before the team has responded.
-3. The team will assess within 24 hours and post a public incident report within 72 hours.
-
----
-
-## Governance Roadmap
-
-| Stage | Target | Description |
-|---|---|---|
-| **Stage 1** (current) | v0.2.0 | Admin multisig + off-chain signalling |
-| **Stage 2** | v0.3.0 | On-chain proposal contract; voting by share holders; results advisory |
-| **Stage 3** | v0.4.0 | Binding on-chain governance; timelock enforced; admin multisig becomes executor |
-| **Stage 4** | v1.0.0 | Full DAO: admin multisig abolished; governance contract is sole admin |
-
-Community feedback on the timeline and design is tracked in GitHub Discussions under the `governance` label.
-
----
-
-*For fee governance details see [/docs/fees.md](docs/fees.md). For contract upgrade procedures see [/docs/UPGRADE_PLAYBOOK.md](docs/UPGRADE_PLAYBOOK.md).*
+- Emergency timelock bypass (requires all 5 signatures)
+- Proposal expiration (auto-reject after 7 days)
+- Weighted voting (different signature weights)
+- Delegation (signers can delegate votes temporarily)
+- Governance token (tie voting power to holdings)

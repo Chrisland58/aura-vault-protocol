@@ -2,22 +2,25 @@
 
 import { useState, useMemo } from "react";
 import { Search, ChevronDown, ChevronUp } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { faqData, categories, type Locale } from "@/lib/faqData";
+import "@/lib/i18n";
 
-const LOCALES: { value: Locale; label: string }[] = [
-  { value: "en", label: "English" },
-  { value: "es", label: "Español" },
-  { value: "fr", label: "Français" },
-];
+const FAQ_LOCALES: Locale[] = ["en", "es", "fr"];
 
 export default function FAQPage() {
-  const [locale, setLocale] = useState<Locale>("en");
+  const { t, i18n } = useTranslation();
+  // Use the global language if it maps to a supported FAQ locale, else "en"
+  const faqLocale: Locale = (FAQ_LOCALES.includes(i18n.language?.slice(0, 2) as Locale)
+    ? i18n.language.slice(0, 2)
+    : "en") as Locale;
+
   const [query, setQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState("all");
   const [openId, setOpenId] = useState<string | null>(null);
 
-  const items = faqData[locale];
-  const cats = categories[locale];
+  const items = faqData[faqLocale];
+  const cats = categories[faqLocale];
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -29,7 +32,6 @@ export default function FAQPage() {
     });
   }, [items, query, activeCategory]);
 
-  // Group by category for display
   const grouped = useMemo(() => {
     const map = new Map<string, typeof filtered>();
     for (const item of filtered) {
@@ -48,10 +50,10 @@ export default function FAQPage() {
       <div className="border-b border-black/[.08] dark:border-white/[.1] py-12 px-6">
         <div className="max-w-3xl mx-auto">
           <h1 className="text-3xl font-semibold tracking-tight mb-2">
-            Frequently Asked Questions
+            {t("faq.title")}
           </h1>
           <p className="text-zinc-500 dark:text-zinc-400 text-base mb-6">
-            Everything you need to know about Aura Vault Protocol.
+            {t("faq.subtitle")}
           </p>
 
           {/* Search */}
@@ -62,7 +64,7 @@ export default function FAQPage() {
             />
             <input
               type="search"
-              placeholder="Search questions…"
+              placeholder={t("faq.search_placeholder")}
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
@@ -72,53 +74,33 @@ export default function FAQPage() {
               className="w-full pl-9 pr-4 py-2.5 rounded-lg border border-black/[.1] dark:border-white/[.15] bg-transparent text-sm focus:outline-none focus:ring-2 focus:ring-black/20 dark:focus:ring-white/20"
             />
           </div>
-
-          {/* Locale selector */}
-          <div className="flex gap-2">
-            {LOCALES.map((l) => (
-              <button
-                key={l.value}
-                onClick={() => {
-                  setLocale(l.value);
-                  setOpenId(null);
-                }}
-                className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
-                  locale === l.value
-                    ? "bg-foreground text-background border-foreground"
-                    : "border-black/[.1] dark:border-white/[.15] hover:bg-black/[.04] dark:hover:bg-white/[.06]"
-                }`}
-              >
-                {l.label}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
 
-      <div className="max-w-3xl mx-auto px-6 py-8 flex flex-col gap-8 sm:flex-row">
+      <div className="max-w-3xl mx-auto w-full px-4 py-8 sm:px-6 lg:px-8 flex flex-col gap-8 lg:flex-row">
         {/* Category sidebar */}
-        <nav className="sm:w-48 shrink-0">
-          <ul className="flex flex-row flex-wrap gap-2 sm:flex-col sm:gap-1">
-            <li>
+        <nav className="w-full sm:w-48 shrink-0">
+          <ul className="flex flex-row flex-wrap gap-2 overflow-x-auto rounded-xl border border-black/[.08] bg-white/80 p-2 dark:border-white/[.12] dark:bg-zinc-950/70 sm:flex-col sm:gap-1 sm:p-0">
+            <li className="min-w-[140px] sm:min-w-0">
               <button
                 onClick={() => { setActiveCategory("all"); setOpenId(null); }}
-                className={`w-full text-left px-3 py-1.5 rounded-md text-sm transition-colors ${
+                className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
                   activeCategory === "all"
                     ? "bg-black/[.06] dark:bg-white/[.08] font-medium"
                     : "hover:bg-black/[.04] dark:hover:bg-white/[.05]"
                 }`}
               >
-                {locale === "es" ? "Todas" : locale === "fr" ? "Toutes" : "All"}
+                {t("faq.all_categories")}
                 <span className="ml-1 text-zinc-400 text-xs">({items.length})</span>
               </button>
             </li>
             {cats.map((cat) => {
               const count = items.filter((i) => i.category === cat.id).length;
               return (
-                <li key={cat.id}>
+                <li key={cat.id} className="min-w-[140px] sm:min-w-0">
                   <button
                     onClick={() => { setActiveCategory(cat.id); setOpenId(null); }}
-                    className={`w-full text-left px-3 py-1.5 rounded-md text-sm transition-colors ${
+                    className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
                       activeCategory === cat.id
                         ? "bg-black/[.06] dark:bg-white/[.08] font-medium"
                         : "hover:bg-black/[.04] dark:hover:bg-white/[.05]"
@@ -137,20 +119,16 @@ export default function FAQPage() {
         <main className="flex-1 min-w-0">
           {filtered.length === 0 ? (
             <p className="text-zinc-500 text-sm py-8 text-center">
-              {locale === "es"
-                ? "No se encontraron resultados."
-                : locale === "fr"
-                ? "Aucun résultat trouvé."
-                : "No results found."}
+              {t("faq.no_results")}
             </p>
           ) : (
             Array.from(grouped.entries()).map(([catId, catItems]) => (
               <section key={catId} className="mb-8">
-                {(query === "" ? false : true) || activeCategory === "all" ? (
+                {(query !== "" || activeCategory === "all") && (
                   <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-400 mb-3">
                     {categoryLabel(catId)}
                   </h2>
-                ) : null}
+                )}
                 <ul className="divide-y divide-black/[.06] dark:divide-white/[.08] border border-black/[.08] dark:border-white/[.1] rounded-xl overflow-hidden">
                   {catItems.map((item) => {
                     const isOpen = openId === item.id;
@@ -183,22 +161,14 @@ export default function FAQPage() {
 
           {/* Footer note */}
           <p className="text-xs text-zinc-400 mt-4">
-            {locale === "es"
-              ? "¿No encuentras tu respuesta? "
-              : locale === "fr"
-              ? "Vous ne trouvez pas votre réponse ? "
-              : "Can't find your answer? "}
+            {t("faq.cant_find")}{" "}
             <a
               href="https://github.com/aura-vault-protocol"
               target="_blank"
               rel="noopener noreferrer"
               className="underline underline-offset-2 hover:text-foreground transition-colors"
             >
-              {locale === "es"
-                ? "Abre un issue en GitHub"
-                : locale === "fr"
-                ? "Ouvrez un ticket GitHub"
-                : "Open a GitHub issue"}
+              {t("faq.open_issue")}
             </a>
           </p>
         </main>
