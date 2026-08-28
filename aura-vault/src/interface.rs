@@ -11,12 +11,20 @@ pub trait AuraVaultTrait {
     fn pause(env: Env, admin: Address) -> Result<(), VaultError>;
     fn unpause(env: Env, admin: Address) -> Result<(), VaultError>;
     fn is_paused(env: Env) -> bool;
+    /// Pause with a human-readable reason string (Issue #377).
+    fn pause_with_reason(env: Env, admin: Address, reason: String) -> Result<(), VaultError>;
+    /// Return the stored pause reason, or None (Issue #377).
+    fn pause_reason(env: Env) -> Option<String>;
     fn set_fees(env: Env, admin: Address, perf_fee_bps: u32, mgmt_fee_bps: u32) -> Result<(), VaultError>;
     fn set_treasury(env: Env, admin: Address, treasury: Address) -> Result<(), VaultError>;
     fn withdraw_fees(env: Env, admin: Address) -> Result<i128, VaultError>;
     fn total_fees_collected(env: Env) -> i128;
     fn total_assets(env: Env) -> i128;
     fn balance_of(env: Env, address: Address) -> i128;
+    /// Estimate shares minted for `amount` tokens without state changes (Issue #379).
+    fn preview_deposit(env: Env, amount: i128) -> i128;
+    /// Estimate tokens redeemed for `shares` vault shares without state changes (Issue #379).
+    fn preview_withdraw(env: Env, shares: i128) -> i128;
     fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), VaultError>;
     fn propose_update_admin(env: Env, proposer: Address, new_admin: Address) -> Result<u64, VaultError>;
     fn propose_update_token(env: Env, proposer: Address, new_token: Address) -> Result<u64, VaultError>;

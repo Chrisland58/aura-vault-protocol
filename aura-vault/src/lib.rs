@@ -23,7 +23,7 @@ use storage::{
 };
 use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
-    get_proposal_status, ProposalStatus, ProposalType,
+    get_proposal_status, ProposalStatus, ProposalType, ParameterUpdate,
 };
 
 #[contract]
@@ -400,6 +400,8 @@ impl AuraVault {
         }
         admin.require_auth();
         set_paused(&env, false);
+        // Clear any stored pause reason when unpausing (Issue #377)
+        storage::clear_pause_reason(&env);
         env.events().publish((Symbol::new(&env, "unpaused"),), ());
         bump_instance(&env);
         Ok(())
@@ -407,6 +409,47 @@ impl AuraVault {
 
     pub fn is_paused(env: Env) -> bool {
         storage_is_paused(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // pause_with_reason — admin-only: pause and store a human-readable reason
+    // (Issue #377)
+    // -----------------------------------------------------------------------
+
+    /// Pause the vault and attach a reason string (max 256 chars).
+    /// Emits a `paused_with_reason` event containing the reason.
+    pub fn pause_with_reason(
+        env: Env,
+        admin: Address,
+        reason: soroban_sdk::String,
+    ) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+
+        // Enforce max 256-character reason length (InvalidAddress reused for bad input)
+        if reason.len() > 256 {
+            return Err(VaultError::InvalidAddress);
+        }
+
+        set_paused(&env, true);
+        storage::set_pause_reason(&env, &reason);
+
+        env.events().publish(
+            (Symbol::new(&env, "paused_with_reason"), admin.clone()),
+            (reason,),
+        );
+
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Return the pause reason string, or None if the vault is unpaused or was
+    /// paused without a reason.
+    pub fn pause_reason(env: Env) -> Option<soroban_sdk::String> {
+        storage::get_pause_reason(&env)
     }
 
     // -----------------------------------------------------------------------
@@ -489,6 +532,60 @@ impl AuraVault {
     }
 
     // -----------------------------------------------------------------------
+    // preview_deposit  (read-only — Issue #379)
+    // Returns the number of shares that would be minted for `amount` tokens
+    // without executing any state changes.
+    //   - First deposit (total_shares == 0 || total_deposited == 0): returns amount (1:1 seed ratio)
+    //   - Subsequent deposits: floor(amount × total_shares / total_deposited)
+    //   - Returns 0 if amount <= 0 or shares would round to 0
+    // -----------------------------------------------------------------------
+    pub fn preview_deposit(env: Env, amount: i128) -> i128 {
+        if amount <= 0 {
+            return 0;
+        }
+        let total_shares = get_total_shares(&env);
+        let total_deposited = get_total_deposited(&env);
+        if total_shares == 0 || total_deposited == 0 {
+            amount
+        } else {
+            let numerator = match amount.checked_mul(total_shares) {
+                Some(n) => n,
+                None => return 0,
+            };
+            match numerator.checked_div(total_deposited) {
+                Some(s) => s,
+                None => 0,
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // preview_withdraw  (read-only — Issue #379)
+    // Returns the number of underlying tokens that would be redeemed for
+    // `shares` vault shares without executing any state changes.
+    //   - Returns floor(shares × total_deposited / total_shares)
+    //   - Returns 0 if shares <= 0 or total_shares == 0
+    // -----------------------------------------------------------------------
+    pub fn preview_withdraw(env: Env, shares: i128) -> i128 {
+        if shares <= 0 {
+            return 0;
+        }
+        let total_shares = get_total_shares(&env);
+        let total_deposited = get_total_deposited(&env);
+        if total_shares == 0 {
+            return 0;
+        }
+        let numerator = match shares.checked_mul(total_deposited) {
+            Some(n) => n,
+            None => return 0,
+        };
+        match numerator.checked_div(total_shares) {
+            Some(a) => a,
+            None => 0,
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Upgrade
     // -----------------------------------------------------------------------
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), VaultError> {
@@ -533,7 +630,7 @@ impl AuraVault {
         name: Symbol,
         value: i128,
     ) -> Result<u64, VaultError> {
-        create_proposal(&env, proposer, ProposalType::UpdateParameter { name, value })
+        create_proposal(&env, proposer, ProposalType::UpdateParameter(ParameterUpdate { name, value }))
     }
 
     pub fn vote(

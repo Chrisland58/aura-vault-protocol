@@ -18,6 +18,8 @@ pub enum DataKey {
     LastMgmtFeeTime,
     /// Whitelisted alternative yield tokens (Issue #48)
     YieldToken(Address),
+    /// Optional human-readable reason stored when pause_with_reason is called (Issue #377).
+    PauseReason,
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -197,4 +199,20 @@ pub fn is_paused(env: &Env) -> bool {
 
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&DataKey::Paused, &paused);
+}
+
+// ---------------------------------------------------------------------------
+// Pause-reason helpers (instance storage — Issue #377)
+// ---------------------------------------------------------------------------
+
+pub fn get_pause_reason(env: &Env) -> Option<soroban_sdk::String> {
+    env.storage().instance().get(&DataKey::PauseReason)
+}
+
+pub fn set_pause_reason(env: &Env, reason: &soroban_sdk::String) {
+    env.storage().instance().set(&DataKey::PauseReason, reason);
+}
+
+pub fn clear_pause_reason(env: &Env) {
+    env.storage().instance().remove(&DataKey::PauseReason);
 }
