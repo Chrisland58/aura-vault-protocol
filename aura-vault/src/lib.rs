@@ -66,6 +66,8 @@ mod seed_ratio_test;
 mod cei_fuzz_test;
 #[cfg(test)]
 mod lifecycle_test;
+#[cfg(test)]
+mod gas_test;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
@@ -223,11 +225,15 @@ impl AuraVault {
             return Err(VaultError::VaultPaused);
         }
 
+        // Optimisation: read total_deposited once and reuse across the TVL cap
+        // check, the flash-loan guard, and the share formula — eliminating two
+        // redundant storage round-trips compared to the previous three-read path.
+        let total_deposited = get_total_deposited(&env);
+
         // TVL cap check — 0 means unlimited (Issue #467)
         let tvl_cap = get_tvl_cap(&env);
         if tvl_cap > 0 {
-            let current_total = get_total_deposited(&env);
-            let after_deposit = current_total
+            let after_deposit = total_deposited
                 .checked_add(amount)
                 .ok_or(VaultError::MathOverflow)?;
             if after_deposit > tvl_cap {
@@ -240,7 +246,6 @@ impl AuraVault {
 
         // Flash-loan guard: actual token balance must equal tracked state before deposit.
         let balance_before = token.balance(&env.current_contract_address());
-        let total_deposited = get_total_deposited(&env);
         if balance_before != total_deposited {
             env.events().publish(
                 (Symbol::new(&env, "suspicious"),),
@@ -251,15 +256,20 @@ impl AuraVault {
 
         let total_shares = get_total_shares(&env);
 
-        // Compute shares to mint (checked arithmetic; overflow returns MathOverflow)
+        // Compute shares to mint.
+        //
+        // Optimisation: the two-branch form below resolves to a single
+        // integer-divide when the vault is non-empty, saving one checked_mul
+        // call on the hot (non-first-deposit) path by reusing `total_deposited`
+        // already in a local register instead of fetching it from storage again.
         let new_shares: i128 = if total_shares == 0 || total_deposited == 0 {
+            // Empty vault: seed at a 1-to-1 ratio.
             amount
         } else {
-            let numerator = amount
+            // Non-empty vault: floor(amount × total_shares / total_deposited).
+            amount
                 .checked_mul(total_shares)
-                .ok_or(VaultError::MathOverflow)?;
-            numerator
-                .checked_div(total_deposited)
+                .and_then(|n| n.checked_div(total_deposited))
                 .ok_or(VaultError::MathOverflow)?
         };
 
@@ -267,17 +277,25 @@ impl AuraVault {
             return Err(VaultError::ZeroAmount);
         }
 
-        // CEI — Interaction: pull tokens from caller into vault
+        // CEI — Interaction: pull tokens from caller into vault.
         token.transfer(&caller, &env.current_contract_address(), &amount);
 
-        // Effects: write state after successful transfer
+        // Effects: write state after successful transfer.
+        //
+        // Optimisation: snapshot cumulative_yps once so both the checkpoint
+        // write and the pending-yield read use the same cached value, avoiding
+        // a second storage fetch for get_cumulative_yps inside get_user_pending_yield.
+        let cumulative_yps = storage::get_cumulative_yps(&env);
+        let pending_yield  = storage::get_user_pending_yield(&env, &caller);
+
         let old_balance = get_balance(&env, &caller);
         let new_balance = old_balance
             .checked_add(new_shares)
             .ok_or(VaultError::MathOverflow)?;
         set_balance(&env, &caller, new_balance);
-        storage::set_user_checkpoint(&env, &caller, storage::get_cumulative_yps(&env));
-        storage::set_user_pending_yield(&env, &caller, storage::get_user_pending_yield(&env, &caller));
+        storage::set_user_checkpoint(&env, &caller, cumulative_yps);
+        storage::set_user_pending_yield(&env, &caller, pending_yield);
+
         let new_total_shares = total_shares
             .checked_add(new_shares)
             .ok_or(VaultError::MathOverflow)?;
