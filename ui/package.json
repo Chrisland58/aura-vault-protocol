@@ -33,16 +33,16 @@
     "@types/jest-axe": "3.5.9",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
-    "@vitejs/plugin-react": "4.3.4",
+    "@vitejs/plugin-react": "6.1.0",
     "@vitest/browser": "4.1.11",
     "@vitest/coverage-v8": "4.1.11",
     "axe-core": "4.13.0",
-    "jest-axe": "9.0.0",
-    "jsdom": "29.1.1",
+    "jest-axe": "11.0.0",
+    "jsdom": "30.0.1",
     "playwright": "^1.62.1",
     "storybook": "^10.4.6",
-    "typescript": "5.7.3",
-    "vite": "6.0.7",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
     "vitest": "4.1.11"
   }
 }

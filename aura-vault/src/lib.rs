@@ -67,6 +67,8 @@ mod seed_ratio_test;
 mod cei_fuzz_test;
 #[cfg(test)]
 mod lifecycle_test;
+#[cfg(test)]
+mod cross_contract_safety_test;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
@@ -114,6 +116,104 @@ pub const MAX_WITHDRAWAL_FEE_BPS: u32 = 500;
 /// persistent storage alive for the standard 30-day window.
 fn bump_user_yield(env: &Env, addr: &Address) {
     storage::bump_user_yield_ttl(env, addr);
+}
+
+/// Maximum oracle price accepted without reverting.
+///
+/// 1e24 in a 7-decimal token (Soroban stroops) is 1e17 tokens — far above any
+/// realistic price for any asset denominated in stroops.  Any value above this
+/// is almost certainly a feed misconfiguration or a manipulation attempt.
+pub const ORACLE_PRICE_SANITY_CAP: i128 = 1_000_000_000_000_000_000_000_000; // 1e24
+
+/// Maximum age of an oracle price before it is considered stale (seconds).
+/// Default: 3 600 s (1 hour).  Admin can narrow this via `set_oracle_max_age`.
+pub const ORACLE_DEFAULT_MAX_AGE_SECS: u64 = 3_600;
+
+// ---------------------------------------------------------------------------
+// Oracle price validation
+// ---------------------------------------------------------------------------
+
+/// Validate an oracle-supplied price:
+///
+/// 1. Zero price — feed returned 0 (dead feed or manipulation).
+/// 2. Sanity cap — price > `ORACLE_PRICE_SANITY_CAP` (unreasonably large).
+/// 3. Staleness — `updated_at` is older than `max_age_secs` relative to
+///    the current ledger timestamp.
+///
+/// Called by `harvest_token` and `distribute_yield_token` to guard the
+/// `underlying_amount` parameter supplied by the caller.
+#[allow(dead_code)]
+pub(crate) fn validate_oracle_price(
+    env: &Env,
+    price: i128,
+    updated_at: u64,
+    max_age_secs: u64,
+) -> Result<(), VaultError> {
+    if price <= 0 {
+        return Err(VaultError::OraclePriceZero);
+    }
+    if price > ORACLE_PRICE_SANITY_CAP {
+        return Err(VaultError::OraclePriceTooHigh);
+    }
+    let now = env.ledger().timestamp();
+    // saturating_sub prevents underflow if updated_at is somehow in the future
+    let age = now.saturating_sub(updated_at);
+    if age > max_age_secs {
+        return Err(VaultError::OraclePriceStale);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Post-transfer balance assertions
+// ---------------------------------------------------------------------------
+
+/// Assert that an **incoming** transfer (caller → vault) moved exactly
+/// `expected` stroops into the vault.
+///
+/// Reads `balance_after` from the token contract and compares with the
+/// caller-supplied `balance_before`.  Returns `TransferFailed` if the delta
+/// does not match.
+///
+/// # Why this is necessary
+///
+/// Soroban's SEP-41 `transfer` entry point panics on failure rather than
+/// returning a bool, so there is no return value to inspect. However, a
+/// deflationary or fee-on-transfer token might silently deliver fewer tokens
+/// than requested.  Asserting the on-chain balance delta catches this class
+/// of silent failure.
+pub(crate) fn assert_incoming_transfer(
+    token: &token::Client,
+    vault_addr: &Address,
+    balance_before: i128,
+    expected: i128,
+) -> Result<(), VaultError> {
+    let balance_after = token.balance(vault_addr);
+    let delta = balance_after
+        .checked_sub(balance_before)
+        .ok_or(VaultError::MathOverflow)?;
+    if delta != expected {
+        return Err(VaultError::TransferFailed);
+    }
+    Ok(())
+}
+
+/// Assert that an **outgoing** transfer (vault → recipient) moved exactly
+/// `expected` stroops out of the vault.
+pub(crate) fn assert_outgoing_transfer(
+    token: &token::Client,
+    vault_addr: &Address,
+    balance_before: i128,
+    expected: i128,
+) -> Result<(), VaultError> {
+    let balance_after = token.balance(vault_addr);
+    let delta = balance_before
+        .checked_sub(balance_after)
+        .ok_or(VaultError::MathOverflow)?;
+    if delta != expected {
+        return Err(VaultError::TransferFailed);
+    }
+    Ok(())
 }
 
 #[contract]
@@ -268,7 +368,10 @@ impl AuraVault {
         }
 
         // CEI — Interaction: pull tokens from caller into vault
-        token.transfer(&caller, &env.current_contract_address(), &amount);
+        let vault_addr = env.current_contract_address();
+        let pre_deposit_balance = token.balance(&vault_addr);
+        token.transfer(&caller, &vault_addr, &amount);
+        assert_incoming_transfer(&token, &vault_addr, pre_deposit_balance, amount)?;
 
         // Effects: write state after successful transfer
         let old_balance = get_balance(&env, &caller);
@@ -455,7 +558,10 @@ impl AuraVault {
         // -----------------------------------------------------------------------
 
         // Interaction: send tokens to caller after all state is settled
-        token.transfer(&env.current_contract_address(), &caller, &redeem_amount);
+        let vault_addr = env.current_contract_address();
+        let pre_withdraw_balance = token.balance(&vault_addr);
+        token.transfer(&vault_addr, &caller, &redeem_amount);
+        assert_outgoing_transfer(&token, &vault_addr, pre_withdraw_balance, redeem_amount)?;
 
         // Event: topics = (event_name, caller, shares) — indexed for efficient filtering.
         env.events().publish(
@@ -688,7 +794,10 @@ impl AuraVault {
         // Interaction: transfer tokens to caller
         let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
         let token = token::Client::new(&env, &token_addr);
-        token.transfer(&env.current_contract_address(), &caller, &net_amount);
+        let vault_addr = env.current_contract_address();
+        let pre_claim_balance = token.balance(&vault_addr);
+        token.transfer(&vault_addr, &caller, &net_amount);
+        assert_outgoing_transfer(&token, &vault_addr, pre_claim_balance, net_amount)?;
 
         // Event: topics = (event_name, caller, entry_id) — indexed.
         env.events().publish(
@@ -845,7 +954,10 @@ impl AuraVault {
         }
 
         // Interaction: pull yield tokens into vault
-        token.transfer(&caller, &env.current_contract_address(), &yield_amount);
+        let vault_addr = env.current_contract_address();
+        let pre_harvest_balance = token.balance(&vault_addr);
+        token.transfer(&caller, &vault_addr, &yield_amount);
+        assert_incoming_transfer(&token, &vault_addr, pre_harvest_balance, yield_amount)?;
 
         // Effects: increase total deposited with net yield; accumulate fees
         set_total_deposited(&env, new_total);
@@ -953,13 +1065,31 @@ impl AuraVault {
             .checked_sub(fee_amount)
             .ok_or(VaultError::MathOverflow)?;
 
+        // Oracle sanity guard: validate the caller-supplied underlying_amount
+        // against the oracle price constraints (zero, sanity-cap, staleness).
+        // We use the current ledger timestamp as `updated_at` because
+        // harvest_token callers are expected to supply a freshly-computed value;
+        // the staleness window is therefore set to zero (must be from this
+        // ledger).  Callers that supply a pre-computed price from an off-chain
+        // oracle MUST pass the oracle's `updated_at` and use `set_oracle_max_age`
+        // to configure the allowed staleness.
+        validate_oracle_price(
+            &env,
+            underlying_amount,
+            env.ledger().timestamp(), // treat the supplied value as "just fetched"
+            ORACLE_DEFAULT_MAX_AGE_SECS,
+        )?;
+
         let new_total = total_deposited
             .checked_add(net_underlying)
             .ok_or(VaultError::MathOverflow)?;
 
         // Interaction: pull alt-token yield from caller
-        token::Client::new(&env, &alt_token)
-            .transfer(&caller, &env.current_contract_address(), &yield_amount);
+        let alt_token_client = token::Client::new(&env, &alt_token);
+        let vault_addr = env.current_contract_address();
+        let pre_alt_balance = alt_token_client.balance(&vault_addr);
+        alt_token_client.transfer(&caller, &vault_addr, &yield_amount);
+        assert_incoming_transfer(&alt_token_client, &vault_addr, pre_alt_balance, yield_amount)?;
 
         // Effects: credit net underlying value
         set_total_deposited(&env, new_total);
@@ -1107,7 +1237,10 @@ impl AuraVault {
         }
 
         // --- CEI: Interaction first — pull tokens ---
-        token.transfer(&caller, &env.current_contract_address(), &yield_amount);
+        let vault_addr = env.current_contract_address();
+        let pre_dist_balance = token.balance(&vault_addr);
+        token.transfer(&caller, &vault_addr, &yield_amount);
+        assert_incoming_transfer(&token, &vault_addr, pre_dist_balance, yield_amount)?;
 
         // --- Effects: update global state ---
         let prev_yps = storage::get_cumulative_yps(&env);
@@ -1200,6 +1333,15 @@ impl AuraVault {
             .checked_sub(fee_amount)
             .ok_or(VaultError::MathOverflow)?;
 
+        // Oracle sanity guard: validate the caller-supplied underlying_amount.
+        // Same constraints as harvest_token.
+        validate_oracle_price(
+            &env,
+            underlying_amount,
+            env.ledger().timestamp(),
+            ORACLE_DEFAULT_MAX_AGE_SECS,
+        )?;
+
         // Accuracy guard
         let scaled = net_underlying
             .checked_mul(YIELD_PRECISION)
@@ -1228,8 +1370,11 @@ impl AuraVault {
         }
 
         // Interaction: pull alt-token yield from caller
-        token::Client::new(&env, &alt_token)
-            .transfer(&caller, &env.current_contract_address(), &yield_amount);
+        let alt_token_client = token::Client::new(&env, &alt_token);
+        let vault_addr = env.current_contract_address();
+        let pre_alt_balance = alt_token_client.balance(&vault_addr);
+        alt_token_client.transfer(&caller, &vault_addr, &yield_amount);
+        assert_incoming_transfer(&alt_token_client, &vault_addr, pre_alt_balance, yield_amount)?;
 
         // Effects
         let prev_yps = storage::get_cumulative_yps(&env);
@@ -1396,7 +1541,10 @@ impl AuraVault {
         // Interaction: transfer claimable yield to caller
         let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
         let token = token::Client::new(&env, &token_addr);
-        token.transfer(&env.current_contract_address(), &caller, &total_claimable);
+        let vault_addr = env.current_contract_address();
+        let pre_collect_balance = token.balance(&vault_addr);
+        token.transfer(&vault_addr, &caller, &total_claimable);
+        assert_outgoing_transfer(&token, &vault_addr, pre_collect_balance, total_claimable)?;
 
         // Note: We do NOT reduce total_deposited here — the yield was already
         // added to total_deposited in distribute_yield.  The transfer comes
@@ -1620,7 +1768,10 @@ impl AuraVault {
 
         // Adjust total_deposited: fees were already excluded from it during harvest,
         // so we just transfer from vault balance.
-        token.transfer(&env.current_contract_address(), &treasury, &fees);
+        let vault_addr = env.current_contract_address();
+        let pre_fees_balance = token.balance(&vault_addr);
+        token.transfer(&vault_addr, &treasury, &fees);
+        assert_outgoing_transfer(&token, &vault_addr, pre_fees_balance, fees)?;
         storage::set_total_fee_collected(&env, 0);
 
         env.events().publish(

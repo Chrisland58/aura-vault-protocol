@@ -31,7 +31,7 @@ jobs:
 
     steps:
       # ── Checkout ────────────────────────────────────────────────────────────
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ── Rust toolchain ──────────────────────────────────────────────────────
       - name: Install Rust stable
@@ -74,7 +74,7 @@ jobs:
       # ── Always upload artefacts ───────────────────────────────────────────────
       - name: Upload gas report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gas-report
           path: |

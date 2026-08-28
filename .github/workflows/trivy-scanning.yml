@@ -46,7 +46,7 @@ jobs:
       contract-critical: ${{ steps.scan-contract.outputs.critical_count }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -189,7 +189,7 @@ jobs:
 
       - name: Upload all scan results as artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trivy-scan-results-${{ github.sha }}
           path: |
@@ -200,7 +200,7 @@ jobs:
 
       - name: Upload backend SARIF to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-backend.sarif
           category: trivy-backend
@@ -208,7 +208,7 @@ jobs:
 
       - name: Upload frontend SARIF to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-frontend.sarif
           category: trivy-frontend
@@ -216,7 +216,7 @@ jobs:
 
       - name: Upload contract SARIF to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-contract.sarif
           category: trivy-contract
@@ -251,7 +251,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download scan results
         uses: actions/download-artifact@v8

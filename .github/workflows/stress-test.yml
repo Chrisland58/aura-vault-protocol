@@ -18,7 +18,7 @@ jobs:
     name: "Contract stress test (10,000 ops)"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
@@ -36,7 +36,7 @@ jobs:
         timeout-minutes: 10
 
       - name: Upload stress test report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: stress-test-report

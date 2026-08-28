@@ -239,141 +239,25 @@ pub enum VaultError {
     /// **Resolution:** This is an internal safeguard; adjust the yield amount
     /// slightly or contact the vault admin if it persists.
     DistributionAccuracyError = 18,
-
-    /// A harvest was attempted before the configured cooldown period has elapsed.
-    ///
-    /// **Trigger:** `harvest` called within `harvest_cooldown_secs` seconds of
-    /// the last successful harvest.
-    ///
-    /// **Resolution:** Wait for the cooldown period to pass before harvesting
-    /// again. The cooldown resets after each successful harvest.
-    HarvestCooldown = 19,
-
-    // -----------------------------------------------------------------------
-    // 20–23: Withdrawal queue errors
-    // -----------------------------------------------------------------------
-
-    /// The withdrawal has been queued and will be available after the unbonding
-    /// period.
-    ///
-    /// **Trigger:** `withdraw(shares)` called with an amount exceeding the
-    /// instant-withdrawal threshold while a withdrawal unbonding period is
-    /// configured. This is an informational status, not a fatal error.
-    ///
-    /// **Resolution:** No action needed. Retrieve your entry ID from the
-    /// emitted event and call `claim_withdrawal(entry_id)` after the unbonding
-    /// period expires.
-    WithdrawalQueued = 20,
-
-    /// The withdrawal queue entry does not exist or has already been claimed.
-    ///
-    /// **Trigger:** `claim_withdrawal(entry_id)` called with an ID that was
-    /// never created, or that has already been processed.
-    ///
-    /// **Resolution:** Verify the entry ID. If you have already claimed this
-    /// withdrawal, the tokens should already be in your wallet.
-    QueueEntryNotFound = 21,
-
-    /// The queued withdrawal is still within the unbonding period.
-    ///
-    /// **Trigger:** `claim_withdrawal(entry_id)` called before the
-    /// `claimable_after` timestamp on the queue entry has passed.
-    ///
-    /// **Resolution:** Wait for the unbonding period to expire, then retry.
-    QueueUnbondingPending = 22,
-
-    /// The withdrawal fee rate exceeds the allowed maximum (5%).
-    ///
-    /// **Trigger:** `set_withdrawal_fee_bps(bps)` called with `bps > 500`
-    /// (where 500 basis points = 5%).
-    ///
-    /// **Resolution:** Use a fee value between 0 and 500 basis points.
-    InvalidWithdrawalFee = 23,
-
-    // -----------------------------------------------------------------------
-    // 24: Circuit-breaker errors
-    // -----------------------------------------------------------------------
-
-    /// A harvest was rejected because the share price would move beyond the
-    /// configured circuit-breaker limit; the vault has been auto-paused.
-    ///
-    /// **Trigger:** `harvest(yield_amount)` would change the share price by
-    /// more than `price_movement_limit` basis points in a single transaction.
-    /// The vault has been automatically paused and a `suspicious` event
-    /// emitted.
-    ///
-    /// **Resolution:** The vault admin must review the harvest source, confirm
-    /// it is legitimate, and then call `unpause()` to resume operations.
-    CircuitBreakerTripped = 24,
-}
-
-impl VaultError {
-    /// Return a short, end-user-facing English description of this error.
-    ///
-    /// These strings are embedded in the contract ABI metadata so that wallet
-    /// and explorer UIs can display them directly without a separate lookup.
-    /// Localised versions of every message are available via the
-    /// `vault_errors` namespace in the frontend i18n files.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use aura_vault::VaultError;
-    /// assert_eq!(
-    ///     VaultError::VaultPaused.message(),
-    ///     "The vault is currently paused. Please wait for the admin to resume operations.",
-    /// );
-    /// ```
-    pub const fn message(self) -> &'static str {
-        match self {
-            VaultError::NotInitialized =>
-                "The vault has not been initialized yet. Contact the admin or verify the contract address.",
-            VaultError::AlreadyInitialized =>
-                "The vault has already been initialized and cannot be set up again.",
-            VaultError::InsufficientShares =>
-                "You do not have enough vault shares to complete this withdrawal. Check your share balance.",
-            VaultError::InsufficientUnderlying =>
-                "The vault does not have enough underlying tokens to cover this redemption. Contact the admin.",
-            VaultError::ZeroAmount =>
-                "Amount must be greater than zero. Increase the input amount and try again.",
-            VaultError::MathOverflow =>
-                "Arithmetic overflow: the transaction amount is too large. Try a smaller amount.",
-            VaultError::InvalidAddress =>
-                "The address or token is not recognized. Ensure it has been whitelisted by the admin.",
-            VaultError::ZeroShares =>
-                "The vault has no shareholders yet. Yield cannot be distributed until someone deposits.",
-            VaultError::UpgradeUnauthorized =>
-                "Only the vault admin can perform this action. Connect with the admin account and try again.",
-            VaultError::StorageLayoutMismatch =>
-                "Contract upgrade failed: storage layout version mismatch. A migration is required first.",
-            VaultError::VaultPaused =>
-                "The vault is currently paused. Please wait for the admin to resume operations.",
-            VaultError::BalanceMismatch =>
-                "Security alert: the vault's token balance does not match its records. The vault has been flagged — contact the admin immediately.",
-            VaultError::TimelockNotExpired =>
-                "This governance proposal cannot be executed yet. The timelock period has not elapsed.",
-            VaultError::NotApproved =>
-                "This governance proposal has not received enough approvals to execute.",
-            VaultError::AlreadyVoted =>
-                "You have already voted on this proposal. Each signer may only vote once.",
-            VaultError::TvlCapExceeded =>
-                "This deposit would exceed the vault's total-value-locked cap. Try a smaller amount or wait for capacity.",
-            VaultError::YieldTooSmall =>
-                "The yield amount is too small to distribute — it rounds to zero per share. Accumulate more yield first.",
-            VaultError::DistributionAccuracyError =>
-                "Yield distribution precision check failed. Adjust the yield amount slightly and retry.",
-            VaultError::HarvestCooldown =>
-                "A harvest was performed too recently. Wait for the cooldown period to expire before harvesting again.",
-            VaultError::WithdrawalQueued =>
-                "Your withdrawal has been queued. Claim it after the unbonding period expires using your queue entry ID.",
-            VaultError::QueueEntryNotFound =>
-                "Withdrawal queue entry not found. It may not exist or may have already been claimed.",
-            VaultError::QueueUnbondingPending =>
-                "Your withdrawal is still in the unbonding period. Please wait and retry after the unlock time.",
-            VaultError::InvalidWithdrawalFee =>
-                "Withdrawal fee exceeds the maximum allowed rate of 5%. Use a value between 0 and 500 basis points.",
-            VaultError::CircuitBreakerTripped =>
-                "Harvest rejected: the share price movement exceeded the safety limit. The vault has been auto-paused pending admin review.",
-        }
-    }
+    /// Harvest attempted before the configured cooldown period has elapsed
+    HarvestCooldown        = 19,
+    /// Withdrawal is queued and will be processed after the unbonding period
+    WithdrawalQueued       = 20,
+    /// Withdrawal queue entry does not exist or has already been processed
+    QueueEntryNotFound     = 21,
+    /// Withdrawal queue entry is still within the unbonding period
+    QueueUnbondingPending  = 22,
+    /// Withdrawal fee rate exceeds the allowed maximum
+    InvalidWithdrawalFee   = 23,
+    /// A token.transfer cross-contract call did not move the expected amount
+    /// (post-transfer balance assertion failed).
+    TransferFailed         = 24,
+    /// Oracle price is zero — feed returned a nonsensical value.
+    OraclePriceZero        = 25,
+    /// Oracle price exceeds the sanity-cap (unreasonably large value that
+    /// may indicate a manipulation attempt or mis-configured feed).
+    OraclePriceTooHigh     = 26,
+    /// Oracle data is stale: the `updated_at` timestamp is older than the
+    /// configured maximum age.
+    OraclePriceStale       = 27,
 }
