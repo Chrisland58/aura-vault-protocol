@@ -57,6 +57,7 @@ mod harvest_cooldown_test;
 #[cfg(test)]
 mod pause_lifecycle_test;
 #[cfg(test)]
+mod circuit_breaker_test;#[cfg(test)]
 mod event_test;
 #[cfg(test)]
 mod event_snapshots;
@@ -86,8 +87,7 @@ use storage::{
     get_withdrawal_fee_bps, set_withdrawal_fee_bps,
     get_withdrawal_next_id, set_withdrawal_next_id,
     get_withdrawal_entry, set_withdrawal_entry, remove_withdrawal_entry,
-};
-use governance::{
+};use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
     get_proposal_status, ProposalStatus, ProposalType,
 };
@@ -904,6 +904,54 @@ impl AuraVault {
         let new_total = total_deposited
             .checked_add(yield_after_fee)
             .ok_or(VaultError::MathOverflow)?;
+
+        // -----------------------------------------------------------------------
+        // Circuit-breaker check — Issue #371
+        //
+        // Share price is represented as total_deposited / total_shares (in
+        // underlying token units per share).  We compare old_price vs new_price
+        // using cross-multiplication to stay integer-only and avoid division.
+        //
+        //   old_price = total_deposited / total_shares
+        //   new_price = new_total       / total_shares
+        //
+        // A limit of L bps means:
+        //   price_delta / old_price > L / 10_000
+        //
+        // Which is equivalent (via cross-multiplication):
+        //   |new_total - total_deposited| * 10_000 > total_deposited * L
+        //
+        // L == 0 disables the check.
+        // -----------------------------------------------------------------------
+        let price_limit_bps = storage::get_price_movement_limit(&env);
+        if price_limit_bps > 0 && total_deposited > 0 {
+            let delta = new_total
+                .checked_sub(total_deposited)
+                .ok_or(VaultError::MathOverflow)?
+                .abs();
+            // delta * 10_000 > total_deposited * price_limit_bps
+            let lhs = delta
+                .checked_mul(10_000)
+                .ok_or(VaultError::MathOverflow)?;
+            let rhs = total_deposited
+                .checked_mul(price_limit_bps as i128)
+                .ok_or(VaultError::MathOverflow)?;
+            if lhs > rhs {
+                // Auto-pause and emit event before returning the error.
+                set_paused(&env, true);
+                env.events().publish(
+                    (Symbol::new(&env, "suspicious"),),
+                    (
+                        Symbol::new(&env, "price_movement"),
+                        total_deposited,
+                        new_total,
+                        price_limit_bps,
+                    ),
+                );
+                bump_instance(&env);
+                return Err(VaultError::CircuitBreakerTripped);
+            }
+        }
 
         // Interaction: pull yield tokens into vault
         let vault_addr = env.current_contract_address();
@@ -1799,6 +1847,52 @@ impl AuraVault {
     }
 
     // -----------------------------------------------------------------------
+    // Circuit breaker — share-price movement limit (Issue #371)
+    // -----------------------------------------------------------------------
+
+    /// Set the maximum allowed share-price movement per harvest, in basis points.
+    ///
+    /// Admin-only.  When the price change in a single harvest exceeds this
+    /// threshold the vault is automatically paused and a `suspicious` event is
+    /// emitted.  The admin must manually call [`unpause`] after reviewing.
+    ///
+    /// # Basis-point reference
+    ///
+    /// | `bps` | Meaning |
+    /// |---|---|
+    /// | `0` | Disabled — no movement check |
+    /// | `500` | 5 % movement triggers the circuit breaker |
+    /// | `2000` | 20 % movement triggers the circuit breaker |
+    ///
+    /// The check is symmetric: abnormally large *and* abnormally small price
+    /// changes both trip the breaker.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    ///
+    /// [`unpause`]: AuraVault::unpause
+    pub fn set_price_movement_limit(env: Env, admin: Address, bps: u32) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        storage::set_price_movement_limit(&env, bps);
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Read the current share-price movement limit in basis points.
+    ///
+    /// Returns `0` when the circuit breaker is disabled.
+    /// Read-only; no authorization required.
+    pub fn get_price_movement_limit(env: Env) -> u32 {
+        storage::get_price_movement_limit(&env)
+    }
+
+    // -----------------------------------------------------------------------
     // total_assets  (read-only)
     // -----------------------------------------------------------------------
     /// Returns the total underlying tokens currently tracked by the vault.
@@ -2007,5 +2101,57 @@ impl AuraVault {
                 ProposalStatus::Rejected => soroban_sdk::String::from_str(&env, "Rejected"),
             }
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // get_vault_error_message — ABI-exposed error string lookup (Issue #370)
+    // -----------------------------------------------------------------------
+
+    /// Return the human-readable English message for a given [`VaultError`]
+    /// discriminant, or `None` if the code is not a known variant.
+    ///
+    /// Included in the contract ABI so that wallet and explorer UIs can query
+    /// error descriptions directly without bundling a separate message table.
+    /// The returned string is identical to [`VaultError::message`] for the
+    /// corresponding variant.
+    ///
+    /// Read-only view; no authorisation required.
+    ///
+    /// # Parameters
+    ///
+    /// - `code` — Numeric discriminant (1–24) of a [`VaultError`] variant.
+    ///
+    /// # Returns
+    ///
+    /// `Some(message)` for a recognised code, `None` otherwise.
+    pub fn get_vault_error_message(env: Env, code: u32) -> Option<soroban_sdk::String> {
+        let msg: Option<&'static str> = match code {
+            1  => Some(VaultError::NotInitialized.message()),
+            2  => Some(VaultError::AlreadyInitialized.message()),
+            3  => Some(VaultError::InsufficientShares.message()),
+            4  => Some(VaultError::InsufficientUnderlying.message()),
+            5  => Some(VaultError::ZeroAmount.message()),
+            6  => Some(VaultError::MathOverflow.message()),
+            7  => Some(VaultError::InvalidAddress.message()),
+            8  => Some(VaultError::ZeroShares.message()),
+            9  => Some(VaultError::UpgradeUnauthorized.message()),
+            10 => Some(VaultError::StorageLayoutMismatch.message()),
+            11 => Some(VaultError::VaultPaused.message()),
+            12 => Some(VaultError::BalanceMismatch.message()),
+            13 => Some(VaultError::TimelockNotExpired.message()),
+            14 => Some(VaultError::NotApproved.message()),
+            15 => Some(VaultError::AlreadyVoted.message()),
+            16 => Some(VaultError::TvlCapExceeded.message()),
+            17 => Some(VaultError::YieldTooSmall.message()),
+            18 => Some(VaultError::DistributionAccuracyError.message()),
+            19 => Some(VaultError::HarvestCooldown.message()),
+            20 => Some(VaultError::WithdrawalQueued.message()),
+            21 => Some(VaultError::QueueEntryNotFound.message()),
+            22 => Some(VaultError::QueueUnbondingPending.message()),
+            23 => Some(VaultError::InvalidWithdrawalFee.message()),
+            24 => Some(VaultError::CircuitBreakerTripped.message()),
+            _  => None,
+        };
+        msg.map(|s| soroban_sdk::String::from_str(&env, s))
     }
 }
