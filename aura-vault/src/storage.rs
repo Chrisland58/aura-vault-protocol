@@ -55,6 +55,15 @@ pub enum DataKey {
     /// Maximum allowed share-price movement per harvest, in basis points.
     /// 0 = check disabled. Covers both up and down movements.
     PriceMovementLimit,
+    // -----------------------------------------------------------------------
+    // Multi-asset basket (Issue #336)
+    // -----------------------------------------------------------------------
+    /// List of registered basket asset token addresses.
+    BasketAssets,
+    /// Weight in basis points for a specific basket asset (must all sum to 10000).
+    AssetWeight(Address),
+    /// On-chain balance tracked per basket asset.
+    AssetBalance(Address),
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -413,6 +422,53 @@ pub fn set_price_movement_limit(env: &Env, bps: u32) {
     env.storage()
         .instance()
         .set(&DataKey::PriceMovementLimit, &bps);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-asset basket storage helpers (Issue #336)
+// ---------------------------------------------------------------------------
+
+/// Return the list of basket asset token addresses (empty vec if none configured).
+pub fn get_basket_assets(env: &Env) -> soroban_sdk::Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::BasketAssets)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env))
+}
+
+/// Overwrite the entire basket assets list.
+pub fn set_basket_assets(env: &Env, assets: &soroban_sdk::Vec<Address>) {
+    env.storage().instance().set(&DataKey::BasketAssets, assets);
+}
+
+/// Get weight (bps) for a basket asset. Returns 0 if not registered.
+pub fn get_asset_weight(env: &Env, token: &Address) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::AssetWeight(token.clone()))
+        .unwrap_or(0)
+}
+
+/// Set weight (bps) for a basket asset.
+pub fn set_asset_weight(env: &Env, token: &Address, weight: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::AssetWeight(token.clone()), &weight);
+}
+
+/// Get tracked balance for a basket asset.
+pub fn get_asset_balance(env: &Env, token: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AssetBalance(token.clone()))
+        .unwrap_or(0)
+}
+
+/// Set tracked balance for a basket asset.
+pub fn set_asset_balance(env: &Env, token: &Address, balance: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::AssetBalance(token.clone()), &balance);
 }
 
 /// A single entry in the withdrawal queue.
