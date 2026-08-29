@@ -55,6 +55,25 @@ pub enum DataKey {
     /// Maximum allowed share-price movement per harvest, in basis points.
     /// 0 = check disabled. Covers both up and down movements.
     PriceMovementLimit,
+
+    // -----------------------------------------------------------------------
+    // Deposit cap (Issue #338)
+    // -----------------------------------------------------------------------
+    /// Per-address deposit cap: maximum underlying-token amount this address
+    /// may have deposited (i.e. max cumulative shares-expressed-as-tokens).
+    /// 0 = no per-address cap for this address.
+    DepositCap(Address),
+    /// Global deposit cap: maximum underlying-token amount any single address
+    /// may deposit. Applied when no per-address cap is set. 0 = disabled.
+    GlobalDepositCap,
+    /// Cap whitelist: addresses exempt from all deposit caps.
+    CapWhitelist(Address),
+
+    // -----------------------------------------------------------------------
+    // Share transferability (Issue #340)
+    // -----------------------------------------------------------------------
+    /// Approval: spender → allowance granted by owner.
+    Allowance(Address, Address),
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -413,6 +432,74 @@ pub fn set_price_movement_limit(env: &Env, bps: u32) {
     env.storage()
         .instance()
         .set(&DataKey::PriceMovementLimit, &bps);
+}
+
+// ---------------------------------------------------------------------------
+// Deposit cap helpers (Issue #338)
+// ---------------------------------------------------------------------------
+
+/// Per-address deposit cap (in underlying token units). 0 = no cap.
+pub fn get_deposit_cap(env: &Env, addr: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::DepositCap(addr.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_deposit_cap(env: &Env, addr: &Address, cap: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::DepositCap(addr.clone()), &cap);
+}
+
+/// Global deposit cap (in underlying token units). 0 = disabled.
+pub fn get_global_deposit_cap(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::GlobalDepositCap).unwrap_or(0)
+}
+
+pub fn set_global_deposit_cap(env: &Env, cap: i128) {
+    env.storage().instance().set(&DataKey::GlobalDepositCap, &cap);
+}
+
+/// Returns true if the address is on the cap whitelist (exempt from all caps).
+pub fn is_cap_whitelisted(env: &Env, addr: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::CapWhitelist(addr.clone()))
+        .unwrap_or(false)
+}
+
+pub fn set_cap_whitelist(env: &Env, addr: &Address, whitelisted: bool) {
+    env.storage()
+        .instance()
+        .set(&DataKey::CapWhitelist(addr.clone()), &whitelisted);
+}
+
+/// TTL bump for per-address deposit cap persistent entry.
+pub fn bump_deposit_cap_ttl(env: &Env, addr: &Address) {
+    let key = DataKey::DepositCap(addr.clone());
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Share transfer allowance helpers (Issue #340)
+// ---------------------------------------------------------------------------
+
+/// Get the spending allowance granted by `owner` to `spender`.
+pub fn get_allowance(env: &Env, owner: &Address, spender: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Allowance(owner.clone(), spender.clone()))
+        .unwrap_or(0)
+}
+
+/// Set the spending allowance granted by `owner` to `spender`.
+pub fn set_allowance(env: &Env, owner: &Address, spender: &Address, amount: i128) {
+    let key = DataKey::Allowance(owner.clone(), spender.clone());
+    env.storage().persistent().set(&key, &amount);
+    env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
 }
 
 /// A single entry in the withdrawal queue.

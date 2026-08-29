@@ -87,9 +87,18 @@ use storage::{
     get_withdrawal_fee_bps, set_withdrawal_fee_bps,
     get_withdrawal_next_id, set_withdrawal_next_id,
     get_withdrawal_entry, set_withdrawal_entry, remove_withdrawal_entry,
-};use governance::{
+    // Deposit cap (Issue #338)
+    get_deposit_cap, set_deposit_cap,
+    get_global_deposit_cap, set_global_deposit_cap,
+    is_cap_whitelisted, set_cap_whitelist,
+    bump_deposit_cap_ttl,
+    // Share transfer allowances (Issue #340)
+    get_allowance, set_allowance,
+};
+
+use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
-    get_proposal_status, ProposalStatus, ProposalType,
+    cancel_proposal, get_proposal_status, ProposalStatus, ProposalType,
 };
 
 // ---------------------------------------------------------------------------
@@ -332,6 +341,56 @@ impl AuraVault {
                 .ok_or(VaultError::MathOverflow)?;
             if after_deposit > tvl_cap {
                 return Err(VaultError::TvlCapExceeded);
+            }
+        }
+
+        // Deposit cap check (Issue #338) — skip for whitelisted addresses.
+        if !is_cap_whitelisted(&env, &caller) {
+            // Compute the number of shares that would be minted so we can
+            // project the caller's post-deposit share balance into underlying
+            // token terms.  We do a lightweight pre-computation here (full
+            // CEI share computation follows below); this is read-only so safe.
+            let ts = get_total_shares(&env);
+            let td = get_total_deposited(&env);
+            let projected_shares: i128 = if ts == 0 || td == 0 {
+                amount
+            } else {
+                amount
+                    .checked_mul(ts)
+                    .ok_or(VaultError::MathOverflow)?
+                    .checked_div(td)
+                    .ok_or(VaultError::MathOverflow)?
+            };
+            let current_shares = get_balance(&env, &caller);
+            let projected_total_shares = current_shares
+                .checked_add(projected_shares)
+                .ok_or(VaultError::MathOverflow)?;
+
+            // Convert projected shares back to underlying value for cap comparison.
+            // projected_underlying = floor(projected_total_shares * total_deposited / total_shares)
+            // When vault is empty the ratio is 1:1 (projected_total_shares == amount already).
+            let projected_underlying: i128 = if ts == 0 || td == 0 {
+                projected_total_shares
+            } else {
+                let after_ts = ts.checked_add(projected_shares).ok_or(VaultError::MathOverflow)?;
+                let after_td = td.checked_add(amount).ok_or(VaultError::MathOverflow)?;
+                projected_total_shares
+                    .checked_mul(after_td)
+                    .ok_or(VaultError::MathOverflow)?
+                    .checked_div(after_ts)
+                    .ok_or(VaultError::MathOverflow)?
+            };
+
+            // Per-address cap (overrides global if set).
+            let per_cap = get_deposit_cap(&env, &caller);
+            let effective_cap = if per_cap > 0 {
+                per_cap
+            } else {
+                get_global_deposit_cap(&env)
+            };
+
+            if effective_cap > 0 && projected_underlying > effective_cap {
+                return Err(VaultError::DepositCapExceeded);
             }
         }
 
@@ -1893,8 +1952,619 @@ impl AuraVault {
     }
 
     // -----------------------------------------------------------------------
-    // total_assets  (read-only)
+    // Deposit cap admin functions (Issue #338)
     // -----------------------------------------------------------------------
+
+    /// Admin: set a per-address deposit cap (in underlying token units).
+    ///
+    /// `cap = 0` removes the per-address cap for that address (the global cap
+    /// still applies unless the address is whitelisted).
+    ///
+    /// Emits a `CapUpdated` event.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    pub fn set_deposit_cap(
+        env: Env,
+        admin: Address,
+        depositor: Address,
+        cap: i128,
+    ) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_deposit_cap(&env, &depositor, cap);
+        bump_deposit_cap_ttl(&env, &depositor);
+        bump_instance(&env);
+        env.events().publish(
+            (Symbol::new(&env, "cap_updated"), admin, depositor.clone()),
+            (Symbol::new(&env, "per_address"), cap),
+        );
+        Ok(())
+    }
+
+    /// Admin: set the global deposit cap (in underlying token units).
+    ///
+    /// Applied to all addresses that do not have a per-address cap and are not
+    /// whitelisted. `cap = 0` disables the global cap.
+    ///
+    /// Emits a `CapUpdated` event.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    pub fn set_global_deposit_cap(
+        env: Env,
+        admin: Address,
+        cap: i128,
+    ) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_global_deposit_cap(&env, cap);
+        bump_instance(&env);
+        env.events().publish(
+            (Symbol::new(&env, "cap_updated"), admin),
+            (Symbol::new(&env, "global"), cap),
+        );
+        Ok(())
+    }
+
+    /// Admin: add an address to the cap whitelist (exempt from all deposit caps).
+    ///
+    /// Emits a `CapUpdated` event.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    pub fn add_cap_whitelist(
+        env: Env,
+        admin: Address,
+        addr: Address,
+    ) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_cap_whitelist(&env, &addr, true);
+        bump_instance(&env);
+        env.events().publish(
+            (Symbol::new(&env, "cap_updated"), admin, addr.clone()),
+            (Symbol::new(&env, "whitelist_add"), true),
+        );
+        Ok(())
+    }
+
+    /// Admin: remove an address from the cap whitelist.
+    ///
+    /// Emits a `CapUpdated` event.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    pub fn remove_cap_whitelist(
+        env: Env,
+        admin: Address,
+        addr: Address,
+    ) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_cap_whitelist(&env, &addr, false);
+        bump_instance(&env);
+        env.events().publish(
+            (Symbol::new(&env, "cap_updated"), admin, addr.clone()),
+            (Symbol::new(&env, "whitelist_remove"), false),
+        );
+        Ok(())
+    }
+
+    /// Read the per-address deposit cap for a given address (0 = no per-address cap).
+    pub fn get_deposit_cap(env: Env, addr: Address) -> i128 {
+        storage::get_deposit_cap(&env, &addr)
+    }
+
+    /// Read the global deposit cap (0 = disabled).
+    pub fn get_global_deposit_cap(env: Env) -> i128 {
+        storage::get_global_deposit_cap(&env)
+    }
+
+    /// Returns `true` if the address is on the cap whitelist.
+    pub fn is_cap_whitelisted(env: Env, addr: Address) -> bool {
+        storage::is_cap_whitelisted(&env, &addr)
+    }
+
+    // -----------------------------------------------------------------------
+    // Share transfer functions (Issue #340) — SEP-41-style token interface
+    // -----------------------------------------------------------------------
+
+    /// Transfer vault shares from `caller` to `to`.
+    ///
+    /// Follows SEP-41 pattern. Transfers are blocked while the vault is paused.
+    ///
+    /// Emits a `Transfer` event (SEP-41 spec).
+    ///
+    /// # Parameters
+    ///
+    /// - `caller` — Owner of shares; must authorise this call.
+    /// - `to` — Recipient address.
+    /// - `shares` — Number of shares to transfer.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::TransferNotAllowed`] — vault is paused.
+    /// - [`VaultError::ZeroAmount`] — `shares <= 0`.
+    /// - [`VaultError::InsufficientShares`] — caller holds fewer shares.
+    pub fn transfer(env: Env, caller: Address, to: Address, shares: i128) -> Result<(), VaultError> {
+        caller.require_auth();
+
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        // Transfers blocked while vault is paused (Issue #340)
+        if storage_is_paused(&env) {
+            return Err(VaultError::TransferNotAllowed);
+        }
+        if shares <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        let from_balance = get_balance(&env, &caller);
+        if shares > from_balance {
+            return Err(VaultError::InsufficientShares);
+        }
+
+        // CEI — Effects: debit sender, credit recipient
+        let new_from = from_balance - shares;
+        set_balance(&env, &caller, new_from);
+
+        let to_balance = get_balance(&env, &to);
+        let new_to = to_balance.checked_add(shares).ok_or(VaultError::MathOverflow)?;
+        set_balance(&env, &to, new_to);
+
+        // Update yield checkpoints for both parties so neither gains/loses pending yield
+        let global_yps = storage::get_cumulative_yps(&env);
+        storage::set_user_checkpoint(&env, &caller, global_yps);
+        storage::set_user_checkpoint(&env, &to, global_yps);
+
+        bump_persistent(&env, &caller);
+        bump_persistent(&env, &to);
+        bump_instance(&env);
+
+        // SEP-41 Transfer event
+        env.events().publish(
+            (Symbol::new(&env, "transfer"), caller.clone(), to.clone()),
+            (shares, new_from, new_to),
+        );
+
+        Ok(())
+    }
+
+    /// Transfer vault shares on behalf of `from`, using an approved allowance.
+    ///
+    /// Caller must have been approved by `from` via [`approve`] for at least
+    /// `shares` amount. Blocked while vault is paused.
+    ///
+    /// Emits a `Transfer` event (SEP-41 spec).
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::TransferNotAllowed`] — vault is paused.
+    /// - [`VaultError::ZeroAmount`] — `shares <= 0`.
+    /// - [`VaultError::InsufficientShares`] — `from` holds fewer shares.
+    /// - [`VaultError::NotApproved`] — spender allowance is insufficient.
+    ///
+    /// [`approve`]: AuraVault::approve
+    pub fn transfer_from(
+        env: Env,
+        spender: Address,
+        from: Address,
+        to: Address,
+        shares: i128,
+    ) -> Result<(), VaultError> {
+        spender.require_auth();
+
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        if storage_is_paused(&env) {
+            return Err(VaultError::TransferNotAllowed);
+        }
+        if shares <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        // Check and consume allowance
+        let current_allowance = get_allowance(&env, &from, &spender);
+        if current_allowance < shares {
+            return Err(VaultError::NotApproved);
+        }
+
+        let from_balance = get_balance(&env, &from);
+        if shares > from_balance {
+            return Err(VaultError::InsufficientShares);
+        }
+
+        // CEI — Effects: reduce allowance, debit sender, credit recipient
+        let new_allowance = current_allowance - shares;
+        set_allowance(&env, &from, &spender, new_allowance);
+
+        let new_from = from_balance - shares;
+        set_balance(&env, &from, new_from);
+
+        let to_balance = get_balance(&env, &to);
+        let new_to = to_balance.checked_add(shares).ok_or(VaultError::MathOverflow)?;
+        set_balance(&env, &to, new_to);
+
+        // Update yield checkpoints
+        let global_yps = storage::get_cumulative_yps(&env);
+        storage::set_user_checkpoint(&env, &from, global_yps);
+        storage::set_user_checkpoint(&env, &to, global_yps);
+
+        bump_persistent(&env, &from);
+        bump_persistent(&env, &to);
+        bump_instance(&env);
+
+        // SEP-41 Transfer event
+        env.events().publish(
+            (Symbol::new(&env, "transfer"), from.clone(), to.clone()),
+            (shares, new_from, new_to),
+        );
+
+        Ok(())
+    }
+
+    /// Approve `spender` to transfer up to `amount` vault shares on behalf of `caller`.
+    ///
+    /// Setting `amount = 0` revokes the approval. Blocked while vault is paused.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::TransferNotAllowed`] — vault is paused.
+    pub fn approve(
+        env: Env,
+        caller: Address,
+        spender: Address,
+        amount: i128,
+    ) -> Result<(), VaultError> {
+        caller.require_auth();
+
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        if storage_is_paused(&env) {
+            return Err(VaultError::TransferNotAllowed);
+        }
+
+        set_allowance(&env, &caller, &spender, amount);
+        bump_instance(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "approval"), caller.clone(), spender.clone()),
+            (amount,),
+        );
+
+        Ok(())
+    }
+
+    /// Read the spending allowance granted by `owner` to `spender`.
+    ///
+    /// Returns `0` if no allowance has been set.
+    /// Read-only; no authorization required.
+    pub fn allowance(env: Env, owner: Address, spender: Address) -> i128 {
+        get_allowance(&env, &owner, &spender)
+    }
+
+    // -----------------------------------------------------------------------
+    // Withdrawal lock threshold alias functions (Issue #337)
+    //
+    // The withdrawal queue is already implemented (set_withdrawal_queue_threshold
+    // + claim_queued_withdrawal). Issue #337 asks for explicit
+    // set_withdrawal_lock_threshold / queue_withdrawal / execute_withdrawal
+    // aliases with renamed events.
+    // -----------------------------------------------------------------------
+
+    /// Set the threshold above which withdrawals are queued with a delay.
+    ///
+    /// Alias for `set_withdrawal_queue_threshold` with the Issue #337 naming.
+    /// `threshold = 0` disables the delay (all withdrawals are instant).
+    ///
+    /// Emits a `WithdrawalThresholdUpdated` event.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    pub fn set_withdrawal_lock_threshold(
+        env: Env,
+        admin: Address,
+        threshold: i128,
+    ) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_withdrawal_queue_threshold(&env, threshold);
+        bump_instance(&env);
+        env.events().publish(
+            (Symbol::new(&env, "withdrawal_threshold_updated"), admin),
+            (threshold,),
+        );
+        Ok(())
+    }
+
+    /// Queue a withdrawal for shares above the configured threshold.
+    ///
+    /// Alias for `withdraw` that explicitly routes through the queue path.
+    /// Shares are burned immediately; the caller must call `execute_withdrawal`
+    /// after the 24-hour delay to receive underlying tokens.
+    ///
+    /// Returns the queue entry ID.
+    ///
+    /// # Errors
+    ///
+    /// Same as `withdraw` plus `VaultError::WithdrawalQueued` is NOT an error
+    /// here — it is the expected outcome. The function returns the entry ID
+    /// rather than reverting.
+    ///
+    /// - [`VaultError::ZeroAmount`] — `shares <= 0`.
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::VaultPaused`] — vault is paused.
+    /// - [`VaultError::InsufficientShares`] — caller holds fewer shares.
+    pub fn queue_withdrawal(env: Env, caller: Address, shares: i128) -> Result<u64, VaultError> {
+        caller.require_auth();
+
+        if shares <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        if storage_is_paused(&env) {
+            return Err(VaultError::VaultPaused);
+        }
+
+        let user_balance = get_balance(&env, &caller);
+        if shares > user_balance {
+            return Err(VaultError::InsufficientShares);
+        }
+
+        let total_deposited = get_total_deposited(&env);
+        let total_shares = get_total_shares(&env);
+
+        let numerator = shares
+            .checked_mul(total_deposited)
+            .ok_or(VaultError::MathOverflow)?;
+        let redeem_amount = numerator
+            .checked_div(total_shares)
+            .ok_or(VaultError::MathOverflow)?;
+
+        if redeem_amount <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+        if total_deposited < redeem_amount {
+            return Err(VaultError::InsufficientUnderlying);
+        }
+
+        // CEI — Effects: burn shares and update state before creating entry
+        let new_balance = user_balance - shares;
+        set_balance(&env, &caller, new_balance);
+        let new_total_shares = total_shares
+            .checked_sub(shares)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_shares(&env, new_total_shares);
+        let new_total_deposited = total_deposited
+            .checked_sub(redeem_amount)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_deposited(&env, new_total_deposited);
+
+        // Create the queue entry with 24-hour delay
+        let unbonding_secs = get_withdrawal_unbonding_secs(&env);
+        let delay = if unbonding_secs > 0 { unbonding_secs } else { 86_400 }; // default 24h
+        let claimable_after = env.ledger().timestamp().saturating_add(delay);
+
+        let entry_id = get_withdrawal_next_id(&env);
+        set_withdrawal_next_id(&env, entry_id + 1);
+
+        let entry = WithdrawalEntry {
+            owner: caller.clone(),
+            shares,
+            redeem_amount,
+            claimable_after,
+            claimed: false,
+        };
+        set_withdrawal_entry(&env, entry_id, &entry);
+
+        bump_persistent(&env, &caller);
+        bump_instance(&env);
+
+        // Event: WithdrawalQueued (Issue #337)
+        env.events().publish(
+            (Symbol::new(&env, "withdrawal_queued"), caller.clone(), entry_id),
+            (shares, redeem_amount, claimable_after),
+        );
+
+        Ok(entry_id)
+    }
+
+    /// Execute a queued withdrawal after the unlock timestamp.
+    ///
+    /// Alias for `claim_queued_withdrawal` with the Issue #337 naming.
+    ///
+    /// # Parameters
+    ///
+    /// - `caller` — Must be the owner of the queue entry and authorise this call.
+    /// - `request_id` — The entry ID returned by `queue_withdrawal`.
+    ///
+    /// # Returns
+    ///
+    /// The net underlying tokens transferred to `caller` after fees.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::VaultPaused`] — vault is paused.
+    /// - [`VaultError::QueueEntryNotFound`] — no entry for `request_id`.
+    /// - [`VaultError::InsufficientShares`] — caller is not the entry owner.
+    /// - [`VaultError::QueueUnbondingPending`] — unlock time not reached.
+    pub fn execute_withdrawal(
+        env: Env,
+        caller: Address,
+        request_id: u64,
+    ) -> Result<i128, VaultError> {
+        // Delegate to the existing claim implementation
+        let result = Self::claim_queued_withdrawal(env.clone(), caller.clone(), request_id)?;
+
+        // Additionally emit a WithdrawalExecuted event (Issue #337)
+        env.events().publish(
+            (Symbol::new(&env, "withdrawal_executed"), caller, request_id),
+            (result,),
+        );
+
+        Ok(result)
+    }
+
+    /// Cancel a queued withdrawal — returns shares to the caller.
+    ///
+    /// The user can cancel their queued withdrawal at any time before execution
+    /// to reclaim their shares (Issue #337: "Queued withdrawals do not lock the
+    /// shares (user can cancel)").
+    ///
+    /// # Parameters
+    ///
+    /// - `caller` — Must be the owner of the queue entry and authorise this call.
+    /// - `entry_id` — The entry ID returned by `queue_withdrawal`.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::QueueEntryNotFound`] — no entry for `entry_id`.
+    /// - [`VaultError::InsufficientShares`] — caller is not the entry owner.
+    pub fn cancel_queued_withdrawal(
+        env: Env,
+        caller: Address,
+        entry_id: u64,
+    ) -> Result<(), VaultError> {
+        caller.require_auth();
+
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+
+        let entry = get_withdrawal_entry(&env, entry_id)
+            .ok_or(VaultError::QueueEntryNotFound)?;
+
+        if entry.owner != caller {
+            return Err(VaultError::InsufficientShares);
+        }
+
+        // Restore shares and total state (reverse of queue_withdrawal)
+        let current_balance = get_balance(&env, &caller);
+        let restored_balance = current_balance
+            .checked_add(entry.shares)
+            .ok_or(VaultError::MathOverflow)?;
+        set_balance(&env, &caller, restored_balance);
+
+        let current_total_shares = get_total_shares(&env);
+        let restored_total_shares = current_total_shares
+            .checked_add(entry.shares)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_shares(&env, restored_total_shares);
+
+        let current_total_deposited = get_total_deposited(&env);
+        let restored_total_deposited = current_total_deposited
+            .checked_add(entry.redeem_amount)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_deposited(&env, restored_total_deposited);
+
+        // Remove the entry
+        remove_withdrawal_entry(&env, entry_id);
+
+        bump_persistent(&env, &caller);
+        bump_instance(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "withdrawal_cancelled"), caller.clone(), entry_id),
+            (entry.shares, entry.redeem_amount),
+        );
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // cancel_proposal — cancel a pending governance proposal (Issue #339)
+    // -----------------------------------------------------------------------
+
+    /// Cancel a pending governance proposal.
+    ///
+    /// Only the proposer or a whitelisted governance signer may cancel.
+    /// Cancelled proposals cannot be re-executed.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::InvalidAddress`] — canceller is not the proposer or a signer.
+    /// - [`VaultError::NotApproved`] — proposal is not in Pending state.
+    pub fn cancel_proposal(
+        env: Env,
+        canceller: Address,
+        proposal_id: u64,
+    ) -> Result<(), VaultError> {
+        cancel_proposal(&env, canceller, proposal_id)?;
+        bump_instance(&env);
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // propose — generic entry point alias (Issue #339)
+    //
+    // The acceptance criteria require `propose(title, calldata, voting_period)`.
+    // We map this onto `propose_parameter_update` for parameter changes, using
+    // a Symbol title and i128 calldata. voting_period is accepted but currently
+    // stored as a note (the 48h timelock is fixed per spec).
+    // -----------------------------------------------------------------------
+
+    /// Create a generic governance proposal with a title, calldata value, and
+    /// voting period hint.
+    ///
+    /// The 48-hour timelock is always enforced regardless of `voting_period`.
+    ///
+    /// # Parameters
+    ///
+    /// - `proposer` — Whitelisted governance signer.
+    /// - `title` — Symbolic name of the parameter to update.
+    /// - `calldata` — Proposed new `i128` value.
+    /// - `voting_period` — Informational voting period (seconds); accepted for
+    ///   interface compatibility but the fixed 48-hour timelock applies.
+    ///
+    /// # Returns
+    ///
+    /// A unique proposal ID.
+    pub fn propose(
+        env: Env,
+        proposer: Address,
+        title: Symbol,
+        calldata: i128,
+        _voting_period: u64,
+    ) -> Result<u64, VaultError> {
+        create_proposal(&env, proposer, ProposalType::UpdateParameter(title, calldata))
+    }
     /// Returns the total underlying tokens currently tracked by the vault.
     ///
     /// Equals the sum of all deposited amounts plus harvested yield (after
@@ -2149,7 +2819,13 @@ impl AuraVault {
             21 => Some(VaultError::QueueEntryNotFound.message()),
             22 => Some(VaultError::QueueUnbondingPending.message()),
             23 => Some(VaultError::InvalidWithdrawalFee.message()),
-            24 => Some(VaultError::CircuitBreakerTripped.message()),
+            24 => Some(VaultError::TransferFailed.message()),
+            25 => Some(VaultError::OraclePriceZero.message()),
+            26 => Some(VaultError::OraclePriceTooHigh.message()),
+            27 => Some(VaultError::OraclePriceStale.message()),
+            28 => Some(VaultError::CircuitBreakerTripped.message()),
+            29 => Some(VaultError::DepositCapExceeded.message()),
+            30 => Some(VaultError::TransferNotAllowed.message()),
             _  => None,
         };
         msg.map(|s| soroban_sdk::String::from_str(&env, s))

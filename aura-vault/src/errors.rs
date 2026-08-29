@@ -260,4 +260,40 @@ pub enum VaultError {
     /// Oracle data is stale: the `updated_at` timestamp is older than the
     /// configured maximum age.
     OraclePriceStale       = 27,
+
+    // -----------------------------------------------------------------------
+    // 28: Circuit breaker
+    // -----------------------------------------------------------------------
+
+    /// The circuit breaker tripped: share price movement exceeded the
+    /// configured limit in a single harvest. The vault has been automatically
+    /// paused. The admin must call `unpause()` after reviewing.
+    CircuitBreakerTripped  = 28,
+
+    // -----------------------------------------------------------------------
+    // 29–30: Deposit cap errors (Issue #338)
+    // -----------------------------------------------------------------------
+
+    /// The deposit would push the caller's total share balance above the
+    /// configured per-address deposit cap.
+    ///
+    /// **Trigger:** `deposit(amount)` called when `existing_shares + new_shares
+    /// > deposit_cap(caller)` and the caller is not on the cap whitelist.
+    ///
+    /// **Resolution:** Deposit a smaller amount, or ask the admin to raise /
+    /// remove your per-address cap with `set_deposit_cap` or add your address
+    /// to the whitelist with `add_cap_whitelist`.
+    DepositCapExceeded     = 29,
+
+    // -----------------------------------------------------------------------
+    // 30: Share transfer errors (Issue #340)
+    // -----------------------------------------------------------------------
+
+    /// A share transfer was attempted while the vault is paused.
+    ///
+    /// **Trigger:** `transfer`, `transfer_from`, or `approve` called while the
+    /// admin has activated the emergency pause.
+    ///
+    /// **Resolution:** Wait for the vault admin to call `unpause()`.
+    TransferNotAllowed     = 30,
 }
