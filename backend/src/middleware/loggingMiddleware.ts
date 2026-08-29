@@ -181,7 +181,6 @@ export function loggingMiddleware() {
     const originalEnd = res.end.bind(res);
     let responseSize = 0;
 
-    // @ts-expect-error — overriding overloaded method
     res.end = function (chunk?: unknown, ...rest: unknown[]) {
       if (chunk) {
         responseSize =

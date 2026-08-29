@@ -1323,9 +1323,9 @@ mod sep41_transfer_allowance {
         testutils::Address as _,
         token::Client as TokenClient,
         token::StellarAssetClient,
-        Address, Env,
+        Address, Env, Val, IntoVal,
     };
-
+    use soroban_sdk::env::internal::TryFromVal;
     use crate::{AuraVault, AuraVaultClient, VaultError};
 
     // -----------------------------------------------------------------------
@@ -1361,7 +1361,9 @@ mod sep41_transfer_allowance {
             .address();
         let vault_addr = env.register_contract(None, AuraVault);
         let vault = AuraVaultClient::new(&env, &vault_addr);
-        vault.initialize(&admin, &token_addr);
+        let signers: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        vault.initialize(&admin, &token_addr, &signers);
+        vault.set_fees(&admin, &0_u32, &0_u32);
         (env, vault, vault_addr, token_addr, admin)
     }
 
@@ -1529,10 +1531,10 @@ mod sep41_transfer_allowance {
         let transfer_amount: i128 = 250_000;
         token.transfer(&alice, &bob, &transfer_amount);
 
-        // env.events().all() returns a soroban_sdk::Vec<(Address, Vec<Val>, Val)>.
-        // Convert to std Vec for ergonomic iteration.
-        let all_events = env.events().all();
-        let events_std: std::vec::Vec<_> = all_events.iter().collect();
+        // env.events().all() returns a ContractEvents in SDK 27.
+        // Use filter_by_contract to get only token events, then count with .events().len().
+        let token_events = env.events().all().filter_by_contract(&token_addr);
+        let all_xdr = token_events.events();
 
         // The SEP-41 / SAC "transfer" event format:
         //   topics[0] = Symbol("transfer")
@@ -1543,28 +1545,21 @@ mod sep41_transfer_allowance {
         let alice_val: Val = alice.clone().into_val(&env);
         let bob_val: Val = bob.clone().into_val(&env);
 
-        let found = events_std.iter().any(|(contract_id, topics, _data)| {
-            // Event must come from the token contract.
-            if *contract_id != token_addr {
-                return false;
+        let found = all_xdr.iter().any(|evt| {
+            use soroban_sdk::xdr::{ContractEventBody, ScVal, ReadXdr};
+            if let ContractEventBody::V0(ref body) = evt.body {
+                let topics = &body.topics;
+                if topics.len() < 3 { return false; }
+                // Convert XDR ScVals to soroban Val for comparison
+                let t0 = Val::try_from_val(&env, &topics[0]).ok();
+                let t1 = Val::try_from_val(&env, &topics[1]).ok();
+                let t2 = Val::try_from_val(&env, &topics[2]).ok();
+                t0.map(|v| v == transfer_sym).unwrap_or(false)
+                    && t1.map(|v| v == alice_val).unwrap_or(false)
+                    && t2.map(|v| v == bob_val).unwrap_or(false)
+            } else {
+                false
             }
-            // The topics Vec must have at least 3 entries.
-            if topics.len() < 3 {
-                return false;
-            }
-            // topics[0] == Symbol("transfer")
-            let t0: Val = topics.get(0).unwrap();
-            if t0 != transfer_sym {
-                return false;
-            }
-            // topics[1] == alice (from)
-            let t1: Val = topics.get(1).unwrap();
-            if t1 != alice_val {
-                return false;
-            }
-            // topics[2] == bob (to)
-            let t2: Val = topics.get(2).unwrap();
-            t2 == bob_val
         });
 
         assert!(
@@ -1597,7 +1592,7 @@ mod sep41_transfer_allowance {
         assert!(shares > 0, "alice should have shares after deposit");
 
         // --- Pause the vault ---
-        vault.pause();
+        vault.pause(&admin);
         assert!(vault.is_paused(), "vault must be paused");
 
         // Record balances *after* pause, *before* any blocked operations.
@@ -1645,7 +1640,7 @@ mod sep41_transfer_allowance {
         );
 
         // --- Unpause and verify operations resume ---
-        vault.unpause();
+        vault.unpause(&admin);
         assert!(!vault.is_paused(), "vault must be unpaused");
 
         // Deposit must succeed after unpause.

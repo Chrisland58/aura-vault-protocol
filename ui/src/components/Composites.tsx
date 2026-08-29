@@ -1,5 +1,5 @@
 import {
-  useState, useRef, useEffect, useId,
+  useState, useRef, useId,
   type SelectHTMLAttributes, type ReactNode, type InputHTMLAttributes,
 } from "react";
 

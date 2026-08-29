@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useCallback } from "react";
 import { ArrowDownCircle, ArrowUpCircle, Zap, CheckCircle2, Clock, XCircle } from "lucide-react";
 import { FinancialBadge, type FinancialSentiment } from "./FinancialValue";
+import { EmptyState } from "./EmptyState";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 

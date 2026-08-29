@@ -21,8 +21,8 @@
 
 import { Router, Request, Response } from "express";
 import { cacheGet, cacheSet, cacheDel } from "../cache.js";
-import { getVaultStats, VaultStatsData, simulateDeposit } from "../services/vaultStatsService.js";
-import { validate, depositSimulateSchema } from "../validation.js";
+import { getVaultStats, VaultStatsData } from "../services/vaultStatsService.js";
+import { getDbMetrics, getSlowQueryLog, dbMetricsPrometheusText } from "../services/dbMonitor.js";
 
 export const VAULT_STATS_CACHE_NS = "vault:stats";
 export const VAULT_STATS_CACHE_KEY = "current";
@@ -119,92 +119,49 @@ export async function invalidateVaultStatsCache(): Promise<void> {
   await cacheDel(VAULT_STATS_CACHE_NS, VAULT_STATS_CACHE_KEY);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #324 — DB Query Performance Monitoring
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * POST /api/v1/vault/simulate/deposit
- *
- * Returns the expected shares, share price, and price impact for a deposit
- * of `amount` underlying tokens without executing any on-chain transaction.
- *
- * The response is cached per (totalAssets, totalShares) vault state so that
- * multiple previews at the same state cost only one vault-stats lookup.
- *
- * Request body:  { amount: number }    — positive integer
- * Response:      { expectedShares, sharePrice, priceImpact }
+ * GET /api/v1/vault/metrics/db
+ * Returns histogram metrics and p99 estimate for each query type.
  */
-vaultRouter.post(
-  "/simulate/deposit",
-  validate(depositSimulateSchema),
-  async (req: Request, res: Response): Promise<void> => {
-    const { amount } = req.body as { amount: number };
+vaultRouter.get("/metrics/db", async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const metrics = await getDbMetrics();
+    res.json({ metrics, generated_at: new Date().toISOString() });
+  } catch (err) {
+    console.error("[vault/metrics/db]", err);
+    res.status(500).json({ error: "Failed to retrieve DB metrics" });
+  }
+});
 
-    // 1. Resolve current vault state (cached via vault:stats if available)
-    let totalAssets: number;
-    let totalShares: number;
+/**
+ * GET /api/v1/vault/metrics/db/slow-log
+ * Returns the slow query log (most recent first).
+ */
+vaultRouter.get("/metrics/db/slow-log", async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const log = await getSlowQueryLog();
+    res.json({ slow_queries: log, count: log.length, generated_at: new Date().toISOString() });
+  } catch (err) {
+    console.error("[vault/metrics/db/slow-log]", err);
+    res.status(500).json({ error: "Failed to retrieve slow query log" });
+  }
+});
 
-    try {
-      // Re-use the existing stats cache to avoid a redundant on-chain read
-      let statsEntry = await cacheGet<VaultStatsCacheEntry>(
-        VAULT_STATS_CACHE_NS,
-        VAULT_STATS_CACHE_KEY,
-      ).catch(() => null);
-
-      if (statsEntry === null) {
-        const liveData = await getVaultStats();
-        statsEntry = { data: liveData, cached_at: Date.now() };
-        // Populate stats cache best-effort
-        cacheSet(VAULT_STATS_CACHE_NS, VAULT_STATS_CACHE_KEY, statsEntry, VAULT_STATS_TTL_SECS).catch(
-          () => undefined,
-        );
-      }
-
-      totalAssets = statsEntry.data.total_assets;
-      totalShares = statsEntry.data.total_shares;
-    } catch (err) {
-      console.error("[vault/simulate/deposit] failed to fetch vault state:", err);
-      res.status(500).json({ error: "Failed to retrieve vault state for simulation" });
-      return;
-    }
-
-    // 2. Build a cache key that encodes the vault state + requested amount
-    //    so different amounts and different vault states each get their own entry.
-    const simulateCacheKey = `${totalAssets}:${totalShares}:${amount}`;
-
-    // 3. Check simulation cache
-    try {
-      const cached = await cacheGet<SimulateDepositCacheEntry>(
-        VAULT_SIMULATE_CACHE_NS,
-        simulateCacheKey,
-      );
-      if (cached !== null) {
-        res.json(cached.result);
-        return;
-      }
-    } catch {
-      // Redis unavailable — fall through to compute
-    }
-
-    // 4. Compute the simulation
-    const result = simulateDeposit(amount, totalAssets, totalShares);
-
-    // 5. Populate simulation cache best-effort
-    const entry: SimulateDepositCacheEntry = { result, cached_at: Date.now() };
-    cacheSet(VAULT_SIMULATE_CACHE_NS, simulateCacheKey, entry, VAULT_SIMULATE_TTL_SECS).catch(
-      () => undefined,
-    );
-
-    res.json(result);
-  },
-);
-
-// ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
-
-interface SimulateDepositCacheEntry {
-  result: {
-    expectedShares: number;
-    sharePrice: number;
-    priceImpact: number;
-  };
-  cached_at: number; // Unix epoch ms
-}
+/**
+ * GET /api/v1/vault/metrics/db/prometheus
+ * Returns Prometheus text exposition for db_query_duration_seconds histogram.
+ * Allows Prometheus to scrape this path directly if configured.
+ */
+vaultRouter.get("/metrics/db/prometheus", async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const text = await dbMetricsPrometheusText();
+    res.set("Content-Type", "text/plain; version=0.0.4").send(text);
+  } catch (err) {
+    console.error("[vault/metrics/db/prometheus]", err);
+    res.status(500).send("# error generating metrics\n");
+  }
+});

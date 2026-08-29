@@ -107,6 +107,21 @@ mod security_tests {
         assert_eq!(vault.total_assets(), 2_000_000);
     }
 
+    /// A reentrant-style follow-up withdrawal attempt must revert cleanly.
+    #[test]
+    fn test_reentrancy_attempt_reverts() {
+        let (env, vault, admin, token) = setup();
+        let attacker = Address::generate(&env);
+        mint(&env, &token, &admin, &attacker, 1_000_000);
+        vault.deposit(&attacker, &1_000_000);
+
+        let shares = vault.balance_of(&attacker);
+        vault.withdraw(&attacker, &shares);
+
+        let result = vault.try_withdraw(&attacker, &shares);
+        assert_eq!(result, Err(Ok(VaultError::InsufficientShares)));
+    }
+
     // -----------------------------------------------------------------------
     // 2. Integer overflow / underflow
     // -----------------------------------------------------------------------
@@ -206,6 +221,15 @@ mod security_tests {
         assert_eq!(result, Err(Ok(VaultError::UpgradeUnauthorized)));
     }
 
+    /// An unauthorized pause attempt must be rejected explicitly.
+    #[test]
+    fn test_unauthorized_pause_attempt_is_blocked() {
+        let (env, vault, _admin, _token) = setup();
+        let stranger = Address::generate(&env);
+        let result = vault.try_pause(&stranger);
+        assert_eq!(result, Err(Ok(VaultError::UpgradeUnauthorized)));
+    }
+
     /// Non-admin cannot unpause the vault.
     #[test]
     fn test_access_control_non_admin_cannot_unpause() {
@@ -252,6 +276,16 @@ mod security_tests {
         assert_eq!(result, Err(Ok(VaultError::AlreadyInitialized)));
     }
 
+    /// An unauthorized upgrade attempt must be rejected.
+    #[test]
+    fn test_unauthorized_upgrade_attempt_is_blocked() {
+        let (env, vault, _admin, _token) = setup();
+        let stranger = Address::generate(&env);
+        let new_wasm_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+        let result = vault.try_upgrade(&stranger, &new_wasm_hash);
+        assert_eq!(result, Err(Ok(VaultError::UpgradeUnauthorized)));
+    }
+
     /// Non-governance signer cannot propose admin changes.
     #[test]
     fn test_access_control_non_signer_cannot_propose_admin_update() {
@@ -276,6 +310,24 @@ mod security_tests {
     // The vault checks: actual_balance == total_deposited before every
     // mutating call. Any discrepancy → BalanceMismatch error.
     // -----------------------------------------------------------------------
+
+    /// Flash-loan style balance mismatch must be detected before the next deposit.
+    #[test]
+    fn test_flash_loan_balance_mismatch_is_detected() {
+        let (env, vault, admin, token) = setup();
+        let user = Address::generate(&env);
+        mint(&env, &token, &admin, &user, 1_000_000);
+        vault.deposit(&user, &1_000_000);
+
+        let vault_addr = vault.address.clone();
+        mint(&env, &token, &admin, &user, 1);
+        StellarAssetClient::new(&env, &token).transfer(&user, &vault_addr, &1);
+
+        let attacker = Address::generate(&env);
+        mint(&env, &token, &admin, &attacker, 1_000);
+        let result = vault.try_deposit(&attacker, &1_000);
+        assert_eq!(result, Err(Ok(VaultError::BalanceMismatch)));
+    }
 
     /// Flash-loan guard: direct token injection without going through deposit
     /// raises BalanceMismatch on the next deposit.
@@ -420,11 +472,10 @@ mod security_tests {
     // 6. Share inflation (zero-share mint) prevention
     // -----------------------------------------------------------------------
 
-    /// A deposit so small that it rounds to zero shares must be rejected.
-    /// This prevents the inflation attack where an attacker donates tiny
-    /// amounts to skew the share price such that victims receive 0 shares.
+    /// A front-run of a legitimate first depositor with a tiny initial deposit
+    /// is blocked because the attacker cannot force a zero-share mint.
     #[test]
-    fn test_inflation_attack_tiny_deposit_zero_shares_rejected() {
+    fn test_inflation_attack_first_depositor_front_run_blocked() {
         let (env, vault, admin, token) = setup();
 
         // Seed with 1 share.
@@ -452,7 +503,7 @@ mod security_tests {
 
     /// Harvesting with zero shares outstanding must be rejected.
     #[test]
-    fn test_inflation_attack_harvest_on_zero_shares_rejected() {
+    fn test_zero_share_harvest_is_blocked() {
         let (env, vault, admin, token) = setup();
         let keeper = Address::generate(&env);
         mint(&env, &token, &admin, &keeper, 1_000);
@@ -496,5 +547,49 @@ mod security_tests {
         let redeemed = vault.withdraw(&alice, &shares);
         assert_eq!(redeemed, 5_000_000);
         assert_invariants(&env, &vault, &[alice]);
+    }
+
+    // -----------------------------------------------------------------------
+    // 8. Unauthorized upgrade attempt blocked
+    //
+    // The `upgrade` function calls `admin.require_auth()` on the *stored*
+    // admin address.  Soroban's auth framework enforces this at the host level:
+    // only a transaction signed by the admin is allowed to proceed past that
+    // check.
+    //
+    // With `mock_all_auths()` active, we verify via `env.auths()` that the
+    // recorded authorization is for the *stored admin*, proving that any
+    // real-chain call requires the admin key.  An attacker without that key
+    // cannot satisfy the auth requirement and their transaction is rejected.
+    // -----------------------------------------------------------------------
+
+    /// Upgrade records an auth requirement for the stored admin address.
+    ///
+    /// `env.auths()` exposes which addresses were required to sign after each
+    /// call.  Verifying that the admin (and only the admin) is the required
+    /// signer proves that any on-chain call must be signed by the admin key —
+    /// an attacker who does not hold it cannot satisfy the check.
+    #[test]
+    fn test_unauthorized_upgrade_blocked() {
+        let (env, vault, admin, _token) = setup();
+        let fake_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
+
+        // Attempt upgrade — in test env with mock_all_auths it may succeed or
+        // fail for unrelated reasons (e.g., wasm hash validation); what matters
+        // is the recorded auth.
+        let _ = vault.try_upgrade(&fake_hash);
+
+        // Verify that upgrade required admin authorisation.
+        let recorded_auths = env.auths();
+        assert!(
+            !recorded_auths.is_empty(),
+            "upgrade must record at least one auth requirement"
+        );
+        let (auth_addr, _invocation) = &recorded_auths[0];
+        assert_eq!(
+            auth_addr, &admin,
+            "upgrade must require auth from the stored admin address — \
+             no other address can satisfy this requirement on a real chain"
+        );
     }
 }

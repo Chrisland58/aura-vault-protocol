@@ -52,9 +52,9 @@ gasRouter.get("/history", async (req: Request, res: Response): Promise<void> => 
     const allHistory = await gasService.history(chainId, MAX_LIMIT);
     const { data, nextCursor } = paginateArray(
       allHistory,
-      (item: Record<string, unknown>, index: number) => ({
+      (item, index) => ({
         id: String(index),
-        timestamp: typeof item.timestamp === "string" ? item.timestamp : String(index),
+        timestamp: typeof item.fetchedAt === "string" ? item.fetchedAt : String(index),
       }),
       limit,
       cursor,
@@ -63,5 +63,19 @@ gasRouter.get("/history", async (req: Request, res: Response): Promise<void> => 
   } catch (err) {
     console.error("[gas-history]", err);
     res.status(500).json({ error: "Unable to load gas history" });
+  }
+});
+
+/**
+ * GET /api/v1/gas/metrics
+ * Returns service performance metrics (cache hit rate, accuracy tracking).
+ */
+gasRouter.get("/metrics", async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const metrics = gasService.getMetrics();
+    res.json(metrics);
+  } catch (err) {
+    console.error("[gas-metrics]", err);
+    res.status(500).json({ error: "Unable to load metrics" });
   }
 });

@@ -1,12 +1,12 @@
-/// Issue #465 — First-depositor seed ratio tests
-///
-/// Verifies:
-///   ✅ First deposit of 1000 tokens → 1000 shares minted (1:1 seed ratio)
-///   ✅ Second deposit of 500 tokens with no harvest → 500 shares minted
-///   ✅ Deposit after harvest → fewer shares minted (price increased)
-///   ✅ Deposit of 1 token when price is high → ZeroAmount error
-///   ✅ All formulas validated with exact integer arithmetic
 #![cfg(test)]
+// Issue #465 — First-depositor seed ratio tests
+//
+// Verifies:
+//   ✅ First deposit of 1000 tokens → 1000 shares minted (1:1 seed ratio)
+//   ✅ Second deposit of 500 tokens with no harvest → 500 shares minted
+//   ✅ Deposit after harvest → fewer shares minted (price increased)
+//   ✅ Deposit of 1 token when price is high → ZeroAmount error
+//   ✅ All formulas validated with exact integer arithmetic
 
 extern crate std;
 

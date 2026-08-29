@@ -47,7 +47,7 @@ jobs:
         working-directory: aura-vault
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -87,7 +87,7 @@ jobs:
           cat ../gas-measurements.json
 
       - name: Upload measurements artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gas-measurements-${{ github.run_id }}
           path: gas-measurements.json
@@ -106,10 +106,10 @@ jobs:
       passed: ${{ steps.compare.outputs.passed }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -140,7 +140,7 @@ jobs:
 
       - name: Upload gas report artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gas-report-${{ github.run_id }}
           path: gas-report.md
@@ -175,7 +175,7 @@ jobs:
           body-includes: "⛽ Gas Usage Report"
 
       - name: Create or update PR comment
-        uses: peter-evans/create-or-update-comment@v4
+        uses: peter-evans/create-or-update-comment@v5
         with:
           comment-id: ${{ steps.find-comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
@@ -195,12 +195,12 @@ jobs:
       github.event.inputs.update_baselines == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 

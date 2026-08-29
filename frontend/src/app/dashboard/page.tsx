@@ -1,25 +1,23 @@
 "use client";
 
-import { DashboardGrid } from "@/components/dashboard/DashboardGrid";
+import { SortableDashboardGrid } from "@/components/dashboard/SortableDashboardGrid";
+import PerformanceCharts from "@/components/PerformanceCharts";
 
 /**
  * /dashboard — main vault overview page.
  *
- * The legacy VaultOverviewDashboard has been replaced by DashboardGrid which
- * uses the new card-based layout:
- *
- *   ┌───────────────────────────────────────────┐
- *   │  HeroCard (TVL + Share Price)  [col-span-2]│
- *   ├─────────────────────┬─────────────────────┤
- *   │  7-Day APY          │  Depositor Count    │
- *   ├─────────────────────┴─────────────────────┤
- *   │  Last Harvest       │  (empty)            │
- *   ├─────────────────────┴─────────────────────┤
- *   │  User Position (only when connected) [×2] │
- *   └───────────────────────────────────────────┘
- *
- * Mobile collapses all cards to a single column.
+ * Issue #498: uses SortableDashboardGrid which supports:
+ *  - Drag-and-drop widget reordering (@dnd-kit/sortable)
+ *  - Keyboard reordering (arrow keys on grip handle)
+ *  - Widget visibility controlled from /settings
+ *  - Layout persisted to localStorage
+ *  - Smooth 60fps drag animation via CSS transform + DragOverlay
  */
 export default function DashboardPage() {
-  return <DashboardGrid />;
+  return (
+    <div className="space-y-8">
+      <SortableDashboardGrid />
+      <PerformanceCharts />
+    </div>
+  );
 }
