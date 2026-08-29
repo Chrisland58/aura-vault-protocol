@@ -12,6 +12,7 @@ import { Router, Request, Response } from "express";
 import { cacheGet, cacheSet, cacheDel } from "../cache.js";
 import { getVaultStats, VaultStatsData } from "../services/vaultStatsService.js";
 import { getDbMetrics, getSlowQueryLog, dbMetricsPrometheusText } from "../services/dbMonitor.js";
+import { successResponse, errorResponse } from "../dto/index.js";
 
 export const VAULT_STATS_CACHE_NS = "vault:stats";
 export const VAULT_STATS_CACHE_KEY = "current";
@@ -50,13 +51,13 @@ vaultRouter.get("/stats", async (_req: Request, res: Response): Promise<void> =>
 
   if (cacheEntry !== null) {
     const ageMs = Date.now() - cacheEntry.cached_at;
-    const response: VaultStatsResponse = {
+    const payload: VaultStatsResponse = {
       ...cacheEntry.data,
       cached: true,
       cache_age_secs: Math.floor(ageMs / 1000),
       fetched_at: fetchedAt,
     };
-    res.json(response);
+    res.json(successResponse(payload));
     return;
   }
 
@@ -72,16 +73,16 @@ vaultRouter.get("/stats", async (_req: Request, res: Response): Promise<void> =>
       // Redis unavailable — serve without caching
     }
 
-    const response: VaultStatsResponse = {
+    const payload: VaultStatsResponse = {
       ...liveData,
       cached: false,
       cache_age_secs: null,
       fetched_at: fetchedAt,
     };
-    res.json(response);
+    res.json(successResponse(payload));
   } catch (err) {
     console.error("[vault/stats]", err);
-    res.status(500).json({ error: "Failed to retrieve vault stats" });
+    res.status(500).json(errorResponse("INTERNAL_ERROR", "Failed to retrieve vault stats"));
   }
 });
 
@@ -92,10 +93,10 @@ vaultRouter.get("/stats", async (_req: Request, res: Response): Promise<void> =>
 vaultRouter.post("/stats/invalidate", async (_req: Request, res: Response): Promise<void> => {
   try {
     await cacheDel(VAULT_STATS_CACHE_NS, VAULT_STATS_CACHE_KEY);
-    res.json({ invalidated: true });
+    res.json(successResponse({ invalidated: true }));
   } catch (err) {
     console.error("[vault/stats/invalidate]", err);
-    res.status(500).json({ error: "Cache invalidation failed" });
+    res.status(500).json(errorResponse("INTERNAL_ERROR", "Cache invalidation failed"));
   }
 });
 
@@ -115,10 +116,10 @@ export async function invalidateVaultStatsCache(): Promise<void> {
 vaultRouter.get("/metrics/db", async (_req: Request, res: Response): Promise<void> => {
   try {
     const metrics = await getDbMetrics();
-    res.json({ metrics, generated_at: new Date().toISOString() });
+    res.json(successResponse({ metrics, generated_at: new Date().toISOString() }));
   } catch (err) {
     console.error("[vault/metrics/db]", err);
-    res.status(500).json({ error: "Failed to retrieve DB metrics" });
+    res.status(500).json(errorResponse("INTERNAL_ERROR", "Failed to retrieve DB metrics"));
   }
 });
 
@@ -129,10 +130,10 @@ vaultRouter.get("/metrics/db", async (_req: Request, res: Response): Promise<voi
 vaultRouter.get("/metrics/db/slow-log", async (_req: Request, res: Response): Promise<void> => {
   try {
     const log = await getSlowQueryLog();
-    res.json({ slow_queries: log, count: log.length, generated_at: new Date().toISOString() });
+    res.json(successResponse({ slow_queries: log, count: log.length, generated_at: new Date().toISOString() }));
   } catch (err) {
     console.error("[vault/metrics/db/slow-log]", err);
-    res.status(500).json({ error: "Failed to retrieve slow query log" });
+    res.status(500).json(errorResponse("INTERNAL_ERROR", "Failed to retrieve slow query log"));
   }
 });
 
