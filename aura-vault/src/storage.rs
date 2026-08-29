@@ -49,6 +49,12 @@ pub enum DataKey {
     WithdrawalNextId,
     /// Individual withdrawal queue entry keyed by queue ID.
     WithdrawalEntry(u64),
+    // -----------------------------------------------------------------------
+    // Share price precision (Issue #383)
+    // -----------------------------------------------------------------------
+    /// Scaling multiplier for share price calculations. Defaults to 10^7
+    /// (Stellar 7-decimal standard). Stored as u32.
+    PricePrecision,
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -404,4 +410,141 @@ pub struct WithdrawalEntry {
     pub claimable_after: u64,
     /// Whether this entry has already been claimed.
     pub claimed: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Share price precision helpers (Issue #383)
+//
+// `price_precision` is the multiplier used when computing the share price for
+// display / off-chain calculations:
+//
+//   share_price = total_deposited * price_precision / total_shares
+//
+// It defaults to 10^7 (Stellar's 7-decimal standard) so a freshly deployed
+// vault on Stellar produces a human-readable "1.0000000" price with no
+// extra configuration.
+//
+// The value is stored in instance storage alongside other vault parameters and
+// is read by `share_price()` and by any off-chain indexer that calls
+// `export_state()`.
+// ---------------------------------------------------------------------------
+
+/// Default precision: 10^7 — matches Stellar's 7-decimal token standard.
+pub const DEFAULT_PRICE_PRECISION: u32 = 10_000_000;
+
+/// Read the configured share price precision multiplier.
+///
+/// Returns [`DEFAULT_PRICE_PRECISION`] if the key was never written (i.e.,
+/// for vaults that were initialised before this feature was added).
+pub fn get_price_precision(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::PricePrecision)
+        .unwrap_or(DEFAULT_PRICE_PRECISION)
+}
+
+/// Persist the share price precision multiplier.
+pub fn set_price_precision(env: &Env, precision: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PricePrecision, &precision);
+}
+
+// ---------------------------------------------------------------------------
+// VaultSnapshot — complete state export for off-chain indexing (Issue #381)
+//
+// `export_state()` in lib.rs returns this struct in a single call.  Back-ends
+// can call it on startup to rebuild their local index without replaying all
+// historical events.  Every field maps directly to one or more DataKey reads
+// so the gas cost is proportional to the number of instance-storage keys
+// (~O(1) per field).
+//
+// Fields
+// ------
+// total_assets      — total underlying tokens in the vault (= total_deposited)
+// total_shares      — total outstanding vault shares
+// is_paused         — emergency-pause flag
+// admin             — admin address (None = uninitialised)
+// fee_bps           — current performance fee in basis points
+// tvl_cap           — TVL cap (0 = unlimited)
+// last_harvest      — timestamp of the last successful harvest (0 = never)
+// version           — contract version counter
+// price_precision   — share price precision multiplier (Issue #383)
+// ---------------------------------------------------------------------------
+
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug)]
+pub struct VaultSnapshot {
+    pub total_assets:     i128,
+    pub total_shares:     i128,
+    pub is_paused:        bool,
+    /// Admin address — always present when vault is initialised.
+    pub admin:            Address,
+    pub fee_bps:          u32,
+    pub tvl_cap:          i128,
+    pub last_harvest:     u64,
+    pub version:          u32,
+    pub price_precision:  u32,
+}
+
+// ---------------------------------------------------------------------------
+// bump_storage — permissionless keeper TTL refresh (Issue #380)
+//
+// Scans all critical instance-storage DataKeys and extends their TTL to
+// 30 days if they are within 7 days of expiry.  Also bumps any per-user
+// persistent keys for the optional `user` hint argument.
+//
+// Returns the number of keys that were successfully bumped.
+//
+// Instance storage uses a single underlying key in Soroban, so calling
+// `bump_instance` once is equivalent to refreshing every instance-resident
+// DataKey at once.  The persistent keys must be bumped individually because
+// each address has its own row.
+// ---------------------------------------------------------------------------
+
+/// Refresh all critical vault storage TTLs.
+///
+/// Instance storage is refreshed unconditionally (single bump covers all
+/// instance-resident keys).  If `user` is `Some(addr)`, the per-user
+/// persistent keys (`Balance`, `UserCheckpoint`, `UserPendingYield`) are also
+/// bumped for that address.
+///
+/// Returns the count of distinct bump operations performed.
+pub fn bump_all_storage(env: &Env, user: Option<&Address>) -> u32 {
+    let mut bumped: u32 = 0;
+
+    // One call covers every instance-storage key.
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    bumped += 1;
+
+    // Per-user persistent keys (Balance, UserCheckpoint, UserPendingYield).
+    if let Some(addr) = user {
+        let balance_key = DataKey::Balance(addr.clone());
+        if env.storage().persistent().has(&balance_key) {
+            env.storage().persistent().extend_ttl(
+                &balance_key,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+            bumped += 1;
+        }
+        let ck = DataKey::UserCheckpoint(addr.clone());
+        if env.storage().persistent().has(&ck) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&ck, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+            bumped += 1;
+        }
+        let py = DataKey::UserPendingYield(addr.clone());
+        if env.storage().persistent().has(&py) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&py, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+            bumped += 1;
+        }
+    }
+
+    bumped
 }

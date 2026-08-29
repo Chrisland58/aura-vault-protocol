@@ -41,11 +41,13 @@ pub trait AuraVaultTrait {
     ///   tokens are deposited into and withdrawn from the vault.
     /// - `signers` — Ordered list of addresses authorised to create and vote
     ///   on governance proposals. Must be non-empty.
+    /// - `price_precision` — Multiplier for share price calculations. Pass `0`
+    ///   to use the Stellar default `10^7`. See [`AuraVault::share_price`].
     ///
     /// # Errors
     ///
     /// - [`VaultError::AlreadyInitialized`] — vault has already been initialised.
-    fn initialize(env: Env, admin: Address, underlying_token: Address, signers: Vec<Address>) -> Result<(), VaultError>;
+    fn initialize(env: Env, admin: Address, underlying_token: Address, signers: Vec<Address>, price_precision: u32) -> Result<(), VaultError>;
 
     /// Deposit underlying tokens and receive proportional vault shares.
     ///
@@ -455,4 +457,40 @@ pub trait AuraVaultTrait {
     /// - `env` — Soroban execution environment.
     /// - `proposal_id` — ID of the proposal to query.
     fn proposal_status(env: Env, proposal_id: u64) -> Option<String>;
+
+    // -----------------------------------------------------------------------
+    // Issue #383 — Configurable share price precision
+    // -----------------------------------------------------------------------
+
+    /// Returns the current share price scaled by `price_precision`.
+    ///
+    /// `share_price = floor(total_deposited × price_precision / total_shares)`
+    ///
+    /// Returns `0` when the vault has no outstanding shares.
+    fn share_price(env: Env) -> i128;
+
+    /// Returns the configured `price_precision` multiplier.
+    ///
+    /// Defaults to `10^7` (Stellar 7-decimal standard) if the vault was
+    /// initialised with `price_precision = 0`.
+    fn get_price_precision(env: Env) -> u32;
+
+    // -----------------------------------------------------------------------
+    // Issue #380 — Storage TTL auto-bump keeper function
+    // -----------------------------------------------------------------------
+
+    /// Refresh TTLs of all critical vault storage keys (permissionless).
+    ///
+    /// Returns the number of bump operations performed.
+    fn bump_storage(env: Env, user: Option<Address>) -> Result<u32, VaultError>;
+
+    // -----------------------------------------------------------------------
+    // Issue #381 — Contract state export for off-chain indexing
+    // -----------------------------------------------------------------------
+
+    /// Return a complete snapshot of vault state in a single call.
+    ///
+    /// Useful for off-chain indexers that need to reconstruct vault state on
+    /// startup without replaying all historical events.
+    fn export_state(env: Env) -> Result<crate::storage::VaultSnapshot, VaultError>;
 }
