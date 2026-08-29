@@ -47,6 +47,10 @@ import {
   loginSchema,
   refreshSchema,
 } from "./validation.js";
+import { validateNetwork, getNetworkConfig } from "./network.js";
+
+// ── Issue #328: Validate network at startup — fail fast on misconfiguration ──
+validateNetwork();
 
 const app = express();
 app.use(cors());
@@ -155,6 +159,7 @@ app.get("/api/health", async (_req, res) => {
     status,
     redis: redisHealthy,
     warmup,
+    network: getNetworkConfig().network,
     timestamp: new Date().toISOString(),
   });
 });
