@@ -481,6 +481,46 @@ pub trait AuraVaultTrait {
     /// - `proposal_id` — ID of the proposal to query.
     fn proposal_status(env: Env, proposal_id: u64) -> Option<String>;
 
+    /// Emergency withdrawal — only available when the vault is paused.
+    ///
+    /// Burns `shares` from the caller and transfers a pro-rata share of the
+    /// vault's **actual on-chain token balance** (not the tracked
+    /// `total_deposited`). This bypasses strategy positions so users can exit
+    /// even when the vault cannot source liquidity through normal means.
+    ///
+    /// Key properties:
+    /// - **Only callable when `is_paused() == true`.**  Returns
+    ///   [`VaultError::NotVaultPaused`] if the vault is not paused.
+    /// - **No fee** — performance and withdrawal fees are waived.
+    /// - **Cannot be disabled** — the admin has no way to block this path.
+    ///   Once the vault is paused, any shareholder may call it.
+    /// - Pro-rata formula: `redeem = floor(shares × actual_balance / total_shares)`
+    ///   where `actual_balance` is the live on-chain token balance.
+    ///
+    /// Emits an `emergency_withdraw` event with topics
+    /// `(event_name, caller, shares)` and data
+    /// `(redeem_amount, new_total_shares, actual_balance_before)`.
+    ///
+    /// # Parameters
+    ///
+    /// - `env` — Soroban execution environment.
+    /// - `caller` — Address redeeming shares; must authorise this call.
+    /// - `shares` — Number of vault shares to burn. Must be > 0 and ≤
+    ///   `balance_of(caller)`.
+    ///
+    /// # Returns
+    ///
+    /// The number of underlying tokens transferred to `caller`.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault has not been initialised.
+    /// - [`VaultError::NotVaultPaused`] — vault is not paused.
+    /// - [`VaultError::ZeroAmount`] — `shares <= 0`, or redemption rounds to zero.
+    /// - [`VaultError::InsufficientShares`] — caller holds fewer shares than requested.
+    /// - [`VaultError::MathOverflow`] — arithmetic overflow.
+    fn emergency_withdraw(env: Env, caller: Address, shares: i128) -> Result<i128, VaultError>;
+
     /// Return the human-readable English message for a given [`VaultError`]
     /// code, or `None` if the code does not correspond to a known variant.
     ///

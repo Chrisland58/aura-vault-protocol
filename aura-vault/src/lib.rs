@@ -57,7 +57,10 @@ mod harvest_cooldown_test;
 #[cfg(test)]
 mod pause_lifecycle_test;
 #[cfg(test)]
-mod circuit_breaker_test;#[cfg(test)]
+mod circuit_breaker_test;
+#[cfg(test)]
+mod emergency_withdraw_test;
+#[cfg(test)]
 mod event_test;
 #[cfg(test)]
 mod event_snapshots;
@@ -1893,6 +1896,119 @@ impl AuraVault {
     }
 
     // -----------------------------------------------------------------------
+    // emergency_withdraw — trust-minimized exit during pause (Issue #344)
+    //
+    // Allows any shareholder to redeem shares for a pro-rata portion of the
+    // vault's actual on-chain token balance when the vault is paused.
+    //
+    // Properties:
+    //   - Only callable when vault IS paused (opposite of normal ops).
+    //   - Redemption is based on actual token.balance() not total_deposited,
+    //     so it works even if total_deposited is out of sync.
+    //   - No fee of any kind (trust-minimized escape hatch).
+    //   - Cannot be disabled by the admin — any paused vault allows it.
+    //   - CEI ordering: state written before token transfer.
+    //   - Emits emergency_withdraw event.
+    // -----------------------------------------------------------------------
+    /// Emergency withdrawal — only callable when the vault is paused.
+    ///
+    /// Burns `shares` and transfers `floor(shares × actual_balance / total_shares)`
+    /// underlying tokens to `caller`. No fee. Cannot be disabled.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::NotVaultPaused`] — vault is not paused.
+    /// - [`VaultError::ZeroAmount`] — `shares <= 0` or redemption rounds to 0.
+    /// - [`VaultError::InsufficientShares`] — caller holds fewer shares than requested.
+    /// - [`VaultError::MathOverflow`] — arithmetic overflow.
+    pub fn emergency_withdraw(env: Env, caller: Address, shares: i128) -> Result<i128, VaultError> {
+        caller.require_auth();
+
+        // Must be initialised
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+
+        // Require vault to be paused — this is the emergency path
+        if !storage_is_paused(&env) {
+            return Err(VaultError::NotVaultPaused);
+        }
+
+        if shares <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        let user_balance = get_balance(&env, &caller);
+        if shares > user_balance {
+            return Err(VaultError::InsufficientShares);
+        }
+
+        let total_shares = get_total_shares(&env);
+        // total_shares must be > 0 if user has shares, but guard anyway
+        if total_shares == 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
+        let token = token::Client::new(&env, &token_addr);
+        let vault_addr = env.current_contract_address();
+
+        // Use actual on-chain balance, not total_deposited, so this works
+        // even if the vault's accounting diverged from reality.
+        let actual_balance = token.balance(&vault_addr);
+
+        // pro-rata: floor(shares × actual_balance / total_shares)
+        let numerator = shares
+            .checked_mul(actual_balance)
+            .ok_or(VaultError::MathOverflow)?;
+        let redeem_amount = numerator
+            .checked_div(total_shares)
+            .ok_or(VaultError::MathOverflow)?;
+
+        if redeem_amount <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        // CEI — Effects: burn shares and update accounting before transfer
+        let new_user_balance = user_balance
+            .checked_sub(shares)
+            .ok_or(VaultError::MathOverflow)?;
+        set_balance(&env, &caller, new_user_balance);
+
+        let new_total_shares = total_shares
+            .checked_sub(shares)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_shares(&env, new_total_shares);
+
+        // Also reduce total_deposited proportionally so share math stays
+        // consistent for any remaining shareholders.
+        let total_deposited = get_total_deposited(&env);
+        let new_total_deposited = total_deposited
+            .checked_sub(redeem_amount)
+            .unwrap_or(0)
+            .max(0);
+        set_total_deposited(&env, new_total_deposited);
+
+        bump_persistent(&env, &caller);
+        bump_instance(&env);
+
+        // Interaction: transfer tokens to caller after state is settled
+        let pre_withdraw_balance = token.balance(&vault_addr);
+        token.transfer(&vault_addr, &caller, &redeem_amount);
+        assert_outgoing_transfer(&token, &vault_addr, pre_withdraw_balance, redeem_amount)?;
+
+        // Event: topics = (event_name, caller, shares) — indexed.
+        // data = (redeem_amount, new_total_shares, actual_balance_before_transfer)
+        env.events().publish(
+            (Symbol::new(&env, "emergency_withdraw"), caller.clone(), shares),
+            (redeem_amount, new_total_shares, actual_balance),
+        );
+
+        Ok(redeem_amount)
+    }
+
+    // -----------------------------------------------------------------------
     // total_assets  (read-only)
     // -----------------------------------------------------------------------
     /// Returns the total underlying tokens currently tracked by the vault.
@@ -2149,7 +2265,12 @@ impl AuraVault {
             21 => Some(VaultError::QueueEntryNotFound.message()),
             22 => Some(VaultError::QueueUnbondingPending.message()),
             23 => Some(VaultError::InvalidWithdrawalFee.message()),
-            24 => Some(VaultError::CircuitBreakerTripped.message()),
+            24 => Some(VaultError::TransferFailed.message()),
+            25 => Some(VaultError::OraclePriceZero.message()),
+            26 => Some(VaultError::OraclePriceTooHigh.message()),
+            27 => Some(VaultError::OraclePriceStale.message()),
+            28 => Some(VaultError::CircuitBreakerTripped.message()),
+            29 => Some(VaultError::NotVaultPaused.message()),
             _  => None,
         };
         msg.map(|s| soroban_sdk::String::from_str(&env, s))

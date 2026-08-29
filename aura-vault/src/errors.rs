@@ -260,4 +260,102 @@ pub enum VaultError {
     /// Oracle data is stale: the `updated_at` timestamp is older than the
     /// configured maximum age.
     OraclePriceStale       = 27,
+
+    // -----------------------------------------------------------------------
+    // 28: Circuit-breaker error (Issue #371)
+    // -----------------------------------------------------------------------
+
+    /// A harvest was blocked and the vault was auto-paused because the
+    /// share price movement exceeded the configured circuit-breaker threshold.
+    ///
+    /// **Trigger:** `harvest` would change the share price by more than the
+    /// `price_movement_limit` basis points set via `set_price_movement_limit`.
+    ///
+    /// **Resolution:** The vault is now paused. The admin should investigate
+    /// the large price movement and call `unpause()` once it has been reviewed.
+    CircuitBreakerTripped  = 28,
+
+    // -----------------------------------------------------------------------
+    // 29: Emergency-withdrawal precondition error (Issue #344)
+    // -----------------------------------------------------------------------
+
+    /// `emergency_withdraw` requires the vault to be paused, but it is not.
+    ///
+    /// **Trigger:** `emergency_withdraw` called while `is_paused()` returns
+    /// `false`. The emergency exit path is only available during a pause to
+    /// ensure it is used as a last resort.
+    ///
+    /// **Resolution:** Wait for the admin to pause the vault, then retry. If
+    /// you want a normal withdrawal, use `withdraw` instead.
+    NotVaultPaused         = 29,
+}
+
+impl VaultError {
+    /// Return the human-readable English description for this error variant.
+    ///
+    /// These strings are embedded in the contract ABI and surfaced by
+    /// `get_vault_error_message` so wallet and explorer UIs can display
+    /// friendly messages without a separate lookup table.
+    pub fn message(self) -> &'static str {
+        match self {
+            VaultError::NotInitialized =>
+                "Vault has not been initialised; call initialize() first.",
+            VaultError::AlreadyInitialized =>
+                "Vault is already initialised; initialize() may only be called once.",
+            VaultError::InsufficientShares =>
+                "Caller does not hold enough shares to fulfil this withdrawal.",
+            VaultError::InsufficientUnderlying =>
+                "Vault cannot cover the redemption; tracked balance is too low.",
+            VaultError::ZeroAmount =>
+                "Amount must be greater than zero, or deposit is too small to mint shares.",
+            VaultError::MathOverflow =>
+                "Arithmetic overflow in share formula; reduce the transaction amount.",
+            VaultError::InvalidAddress =>
+                "Address is not valid or not on the required whitelist.",
+            VaultError::ZeroShares =>
+                "No shares outstanding; wait for the first depositor before harvesting.",
+            VaultError::UpgradeUnauthorized =>
+                "Caller is not the vault admin.",
+            VaultError::StorageLayoutMismatch =>
+                "Storage layout version mismatch; perform migration before upgrading.",
+            VaultError::VaultPaused =>
+                "All mutating operations are halted; the vault is currently paused.",
+            VaultError::BalanceMismatch =>
+                "Actual token balance differs from tracked state (flash-loan guard tripped).",
+            VaultError::TimelockNotExpired =>
+                "Governance timelock has not elapsed; wait before executing this proposal.",
+            VaultError::NotApproved =>
+                "Governance proposal has not reached the required approval threshold.",
+            VaultError::AlreadyVoted =>
+                "This signer has already voted on this proposal.",
+            VaultError::TvlCapExceeded =>
+                "Deposit would exceed the vault TVL cap; try a smaller amount.",
+            VaultError::YieldTooSmall =>
+                "Yield amount is too small to distribute; it rounds to zero per share.",
+            VaultError::DistributionAccuracyError =>
+                "Yield distribution rounding error exceeds the 0.01% accuracy threshold.",
+            VaultError::HarvestCooldown =>
+                "Harvest attempted before the configured cooldown period has elapsed.",
+            VaultError::WithdrawalQueued =>
+                "Withdrawal is queued; call claim_queued_withdrawal after the unbonding period.",
+            VaultError::QueueEntryNotFound =>
+                "Withdrawal queue entry does not exist or has already been claimed.",
+            VaultError::QueueUnbondingPending =>
+                "Withdrawal queue entry is still within the unbonding period.",
+            VaultError::InvalidWithdrawalFee =>
+                "Withdrawal fee rate exceeds the maximum allowed (500 bps / 5%).",
+            VaultError::TransferFailed =>
+                "Token transfer did not move the expected amount (fee-on-transfer token?).",
+            VaultError::OraclePriceZero =>
+                "Oracle price is zero; feed may be dead or returning invalid data.",
+            VaultError::OraclePriceTooHigh =>
+                "Oracle price exceeds sanity cap; possible feed misconfiguration or manipulation.",
+            VaultError::OraclePriceStale =>
+                "Oracle price is stale; updated_at timestamp exceeds the maximum allowed age.",
+            VaultError::CircuitBreakerTripped =>
+                "Share price movement exceeded the circuit-breaker threshold; vault auto-paused.",
+            VaultError::NotVaultPaused =>
+                "emergency_withdraw requires the vault to be paused; use withdraw() instead.",
+        }
+    }
 }
