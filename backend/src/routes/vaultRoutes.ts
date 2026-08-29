@@ -56,7 +56,7 @@ vaultRouter.get("/stats", async (_req: Request, res: Response): Promise<void> =>
       cache_age_secs: Math.floor(ageMs / 1000),
       fetched_at: fetchedAt,
     };
-    res.json(response);
+    res.success(response);
     return;
   }
 
@@ -78,10 +78,10 @@ vaultRouter.get("/stats", async (_req: Request, res: Response): Promise<void> =>
       cache_age_secs: null,
       fetched_at: fetchedAt,
     };
-    res.json(response);
+    res.success(response);
   } catch (err) {
     console.error("[vault/stats]", err);
-    res.status(500).json({ error: "Failed to retrieve vault stats" });
+    res.failure("INTERNAL_ERROR", "Failed to retrieve vault stats", 500);
   }
 });
 
@@ -92,10 +92,10 @@ vaultRouter.get("/stats", async (_req: Request, res: Response): Promise<void> =>
 vaultRouter.post("/stats/invalidate", async (_req: Request, res: Response): Promise<void> => {
   try {
     await cacheDel(VAULT_STATS_CACHE_NS, VAULT_STATS_CACHE_KEY);
-    res.json({ invalidated: true });
+    res.success({ invalidated: true });
   } catch (err) {
     console.error("[vault/stats/invalidate]", err);
-    res.status(500).json({ error: "Cache invalidation failed" });
+    res.failure("INTERNAL_ERROR", "Cache invalidation failed", 500);
   }
 });
 
@@ -115,10 +115,10 @@ export async function invalidateVaultStatsCache(): Promise<void> {
 vaultRouter.get("/metrics/db", async (_req: Request, res: Response): Promise<void> => {
   try {
     const metrics = await getDbMetrics();
-    res.json({ metrics, generated_at: new Date().toISOString() });
+    res.success({ metrics, generated_at: new Date().toISOString() });
   } catch (err) {
     console.error("[vault/metrics/db]", err);
-    res.status(500).json({ error: "Failed to retrieve DB metrics" });
+    res.failure("INTERNAL_ERROR", "Failed to retrieve DB metrics", 500);
   }
 });
 
@@ -129,10 +129,10 @@ vaultRouter.get("/metrics/db", async (_req: Request, res: Response): Promise<voi
 vaultRouter.get("/metrics/db/slow-log", async (_req: Request, res: Response): Promise<void> => {
   try {
     const log = await getSlowQueryLog();
-    res.json({ slow_queries: log, count: log.length, generated_at: new Date().toISOString() });
+    res.success({ slow_queries: log, count: log.length, generated_at: new Date().toISOString() });
   } catch (err) {
     console.error("[vault/metrics/db/slow-log]", err);
-    res.status(500).json({ error: "Failed to retrieve slow query log" });
+    res.failure("INTERNAL_ERROR", "Failed to retrieve slow query log", 500);
   }
 });
 
@@ -147,6 +147,6 @@ vaultRouter.get("/metrics/db/prometheus", async (_req: Request, res: Response): 
     res.set("Content-Type", "text/plain; version=0.0.4").send(text);
   } catch (err) {
     console.error("[vault/metrics/db/prometheus]", err);
-    res.status(500).send("# error generating metrics\n");
+    res.failure("INTERNAL_ERROR", "Error generating metrics", 500);
   }
 });

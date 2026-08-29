@@ -47,11 +47,13 @@ import {
   loginSchema,
   refreshSchema,
 } from "./validation.js";
+import { responseEnvelopeMiddleware } from "./middleware/responseEnvelope.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(loggingMiddleware());
+app.use(responseEnvelopeMiddleware);
 app.use(globalIpRateLimiter(["/api/health"]));
 
 // ── A05 Security Misconfiguration: security headers (Helmet) ─────────────────
@@ -81,7 +83,7 @@ app.post(
     };
 
     const tokens = await generateTokens(walletAddress, deviceId, tier);
-    res.json(tokens);
+    res.success(tokens);
   }
 );
 
@@ -94,34 +96,34 @@ app.post(
 
     const tokens = await refreshAccessToken(refreshToken);
     if (!tokens) {
-      res.status(401).json({ error: "Invalid or expired refresh token" });
+      res.failure("INVALID_TOKEN", "Invalid or expired refresh token", 401);
       return;
     }
 
-    res.json(tokens);
+    res.success(tokens);
   }
 );
 
 app.post("/api/auth/logout", authenticate, userRateLimiter(), async (req, res) => {
   const token = req.headers.authorization?.slice(7);
   if (!token) {
-    res.status(401).json({ error: "Missing token" });
+    res.failure("UNAUTHORIZED", "Missing token", 401);
     return;
   }
 
   const { refreshToken } = req.body;
   await logout(token, refreshToken);
-  res.json({ success: true });
+  res.success({ success: true });
 });
 
 app.get("/api/auth/sessions", authenticate, userRateLimiter(), async (req, res) => {
   const sessions = await getUserSessions((req as any).user.sub);
-  res.json({ sessions });
+  res.success({ sessions });
 });
 
 app.post("/api/auth/revoke-all", authenticate, userRateLimiter(), async (req, res) => {
   await revokeAllSessions((req as any).user.sub);
-  res.json({ success: true });
+  res.success({ success: true });
 });
 
 // ── A01 Broken Access Control: all protected routes use `authenticate` ────────
@@ -151,7 +153,7 @@ app.get("/api/health", async (_req, res) => {
     status = "ok";
   }
 
-  res.json({
+  res.success({
     status,
     redis: redisHealthy,
     warmup,

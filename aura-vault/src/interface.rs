@@ -334,6 +334,39 @@ pub trait AuraVaultTrait {
     /// Read-only; no authorization required.
     fn get_price_movement_limit(env: Env) -> u32;
 
+    // -----------------------------------------------------------------------
+    // Simple harvest fee (Issue #335)
+    // -----------------------------------------------------------------------
+
+    /// Set the simple harvest fee (Issue #335).
+    ///
+    /// Admin-only. Fee is immediately transferred to `fee_recipient` on every
+    /// `harvest` call. Max 1000 bps (10%). Emits `FeeUpdated` event.
+    ///
+    /// # Parameters
+    ///
+    /// - `env` — Soroban execution environment.
+    /// - `admin` — Must match stored admin address and authorise this call.
+    /// - `bps` — Fee in basis points (0–1000).
+    /// - `fee_recipient` — Address that receives the fee on each harvest.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault has not been initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    /// - [`VaultError::ZeroAmount`] — `bps` exceeds 1000.
+    fn set_fee(env: Env, admin: Address, bps: u32, fee_recipient: Address) -> Result<(), VaultError>;
+
+    /// Get the current harvest fee in basis points (Issue #335).
+    ///
+    /// Returns `0` if no fee has been configured. Read-only; no auth required.
+    fn get_fee_bps(env: Env) -> u32;
+
+    /// Get the current harvest fee recipient (Issue #335).
+    ///
+    /// Returns `None` if no recipient has been set. Read-only; no auth required.
+    fn get_fee_recipient(env: Env) -> Option<Address>;
+
     /// Returns the total underlying tokens currently tracked by the vault
     /// (`total_deposited`), in the underlying token's smallest unit.
     ///

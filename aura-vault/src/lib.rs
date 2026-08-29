@@ -35,6 +35,7 @@ mod interface;
 mod storage;
 mod governance;
 mod fee;
+mod multi_asset;
 
 pub use errors::VaultError;
 
@@ -87,6 +88,7 @@ use storage::{
     get_withdrawal_fee_bps, set_withdrawal_fee_bps,
     get_withdrawal_next_id, set_withdrawal_next_id,
     get_withdrawal_entry, set_withdrawal_entry, remove_withdrawal_entry,
+    get_harvest_fee_bps, set_harvest_fee_bps, get_harvest_fee_recipient, set_harvest_fee_recipient,
 };use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
     get_proposal_status, ProposalStatus, ProposalType,
@@ -901,8 +903,35 @@ impl AuraVault {
             .checked_add(fee_amount)
             .ok_or(VaultError::MathOverflow)?;
 
+        // Harvest fee (Issue #335) — deduct a protocol-level fee from the
+        // net yield before crediting total_deposited.  Unlike the performance
+        // fee (which is accumulated inside the vault), the harvest fee is
+        // transferred immediately to the configured recipient.
+        let harvest_fee_bps = storage::get_harvest_fee_bps(&env);
+        let (yield_after_fee_final, harvest_fee) = if harvest_fee_bps > 0 {
+            let hf = (yield_amount as i128)
+                .checked_mul(harvest_fee_bps as i128)
+                .ok_or(VaultError::MathOverflow)?
+                / 10_000_i128;
+            // If the harvest fee alone consumes all (or more) of the yield,
+            // the net credit to depositors would be zero — reject it.
+            if hf >= yield_amount {
+                return Err(VaultError::ZeroAmount);
+            }
+            let yaf = yield_after_fee
+                .checked_sub(hf)
+                .ok_or(VaultError::MathOverflow)?;
+            (yaf, hf)
+        } else {
+            (yield_after_fee, 0_i128)
+        };
+
+        let total_fee_emitted = fee_amount
+            .checked_add(harvest_fee)
+            .ok_or(VaultError::MathOverflow)?;
+
         let new_total = total_deposited
-            .checked_add(yield_after_fee)
+            .checked_add(yield_after_fee_final)
             .ok_or(VaultError::MathOverflow)?;
 
         // -----------------------------------------------------------------------
@@ -959,6 +988,14 @@ impl AuraVault {
         token.transfer(&caller, &vault_addr, &yield_amount);
         assert_incoming_transfer(&token, &vault_addr, pre_harvest_balance, yield_amount)?;
 
+        // Harvest fee transfer (Issue #335) — push the harvest fee portion
+        // directly to the configured recipient, if any.
+        if harvest_fee > 0 {
+            if let Some(recipient) = storage::get_harvest_fee_recipient(&env) {
+                token.transfer(&vault_addr, &recipient, &harvest_fee);
+            }
+        }
+
         // Effects: increase total deposited with net yield; accumulate fees
         set_total_deposited(&env, new_total);
         storage::set_total_fee_collected(&env, new_fees);
@@ -967,7 +1004,7 @@ impl AuraVault {
 
         env.events().publish(
             (Symbol::new(&env, "harvest"), caller.clone(), yield_amount),
-            (yield_after_fee, fee_amount, new_total),
+            (yield_after_fee_final, total_fee_emitted, new_total),
         );
 
         bump_instance(&env);
@@ -1792,6 +1829,69 @@ impl AuraVault {
     }
 
     // -----------------------------------------------------------------------
+    // Harvest fee — admin-only (Issue #335)
+    // -----------------------------------------------------------------------
+
+    /// Set the harvest fee rate and recipient address.
+    ///
+    /// Admin-only.  The harvest fee is deducted from the gross `yield_amount`
+    /// on every [`harvest`] call and transferred immediately to `fee_recipient`
+    /// (rather than accumulated inside the vault like the performance fee).
+    ///
+    /// # Parameters
+    ///
+    /// - `env` — Soroban execution environment.
+    /// - `admin` — Must match the stored admin address and authorise this call.
+    /// - `bps` — Harvest fee in basis points (`0–1_000`; max 10 %).
+    /// - `fee_recipient` — Address that receives the fee on each harvest.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    /// - [`VaultError::FeeExceedsMaximum`] — `bps > 1_000`.
+    ///
+    /// [`harvest`]: AuraVault::harvest
+    pub fn set_fee(env: Env, admin: Address, bps: u32, fee_recipient: Address) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+
+        if bps > 1_000 {
+            return Err(VaultError::FeeExceedsMaximum);
+        }
+
+        storage::set_harvest_fee_bps(&env, bps);
+        storage::set_harvest_fee_recipient(&env, &fee_recipient);
+
+        env.events().publish(
+            (Symbol::new(&env, "fee_updated"), admin),
+            (bps, fee_recipient),
+        );
+
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Read the current harvest fee rate in basis points.
+    ///
+    /// Returns `0` when no harvest fee is configured.
+    /// Read-only; no authorisation required.
+    pub fn get_fee_bps(env: Env) -> u32 {
+        storage::get_harvest_fee_bps(&env)
+    }
+
+    /// Read the current harvest fee recipient address.
+    ///
+    /// Returns `None` when no recipient has been configured.
+    /// Read-only; no authorisation required.
+    pub fn get_fee_recipient(env: Env) -> Option<Address> {
+        storage::get_harvest_fee_recipient(&env)
+    }
+
+    // -----------------------------------------------------------------------
     // TVL cap — admin-only (Issue #467)
     // -----------------------------------------------------------------------
 
@@ -1890,6 +1990,213 @@ impl AuraVault {
     /// Read-only; no authorization required.
     pub fn get_price_movement_limit(env: Env) -> u32 {
         storage::get_price_movement_limit(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-asset basket — Issue #336
+    // -----------------------------------------------------------------------
+
+    /// Register or update a basket asset with its weight in basis points.
+    ///
+    /// Admin-only. After all assets are registered, weights must sum to 10 000
+    /// bps to enable basket deposits and withdrawals. Use `validate_basket_weights`
+    /// to verify the configuration.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    /// - [`VaultError::ZeroAmount`] — `weight == 0`.
+    /// - [`VaultError::InvalidAddress`] — too many basket assets.
+    pub fn add_asset(
+        env: Env,
+        admin: Address,
+        token: Address,
+        weight: u32,
+    ) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        multi_asset::add_asset(&env, &admin, &token, weight)?;
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Validate that all basket asset weights sum to exactly 10 000 bps.
+    ///
+    /// Returns `Ok(())` if valid or if no assets are registered.
+    /// Returns `Err(VaultError::ZeroAmount)` if weights do not sum to 10 000.
+    ///
+    /// Read-only; no authorization required.
+    pub fn validate_basket_weights(env: Env) -> Result<(), VaultError> {
+        multi_asset::validate_weights(&env)
+    }
+
+    /// Deposit a basket asset and receive shares proportional to its weight.
+    ///
+    /// `token` must be a registered basket asset. The deposited amount is
+    /// converted to a reference denomination using the asset weight before
+    /// computing shares.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::VaultPaused`] — vault is paused.
+    /// - [`VaultError::InvalidAddress`] — token not in basket.
+    /// - [`VaultError::ZeroAmount`] — amount is 0 or share rounds to 0.
+    pub fn deposit_basket_asset(
+        env: Env,
+        caller: Address,
+        token: Address,
+        amount: i128,
+    ) -> Result<i128, VaultError> {
+        caller.require_auth();
+
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        if storage_is_paused(&env) {
+            return Err(VaultError::VaultPaused);
+        }
+
+        let total_shares = get_total_shares(&env);
+        let total_deposited = get_total_deposited(&env);
+
+        let new_shares = multi_asset::deposit_asset(
+            &env,
+            &caller,
+            &token,
+            amount,
+            total_shares,
+            total_deposited,
+        )?;
+
+        // Update global share and deposited counters
+        let old_balance = get_balance(&env, &caller);
+        let new_balance = old_balance
+            .checked_add(new_shares)
+            .ok_or(VaultError::MathOverflow)?;
+        set_balance(&env, &caller, new_balance);
+
+        let new_total_shares = total_shares
+            .checked_add(new_shares)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_shares(&env, new_total_shares);
+
+        // basket_value contributed (weight-adjusted amount)
+        let weight = storage::get_asset_weight(&env, &token);
+        let basket_value = (amount as i128)
+            .checked_mul(weight as i128)
+            .ok_or(VaultError::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(VaultError::MathOverflow)?;
+        let new_total_deposited = total_deposited
+            .checked_add(basket_value)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_deposited(&env, new_total_deposited);
+
+        bump_persistent(&env, &caller);
+        bump_instance(&env);
+
+        Ok(new_shares)
+    }
+
+    /// Burn shares and redeem proportional basket composition.
+    ///
+    /// Each registered basket asset is transferred to `caller` in proportion
+    /// to its configured weight.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::VaultPaused`] — vault is paused.
+    /// - [`VaultError::InsufficientShares`] — caller holds fewer shares.
+    /// - [`VaultError::InsufficientUnderlying`] — vault lacks tokens.
+    pub fn withdraw_basket(
+        env: Env,
+        caller: Address,
+        shares: i128,
+    ) -> Result<i128, VaultError> {
+        caller.require_auth();
+
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        if storage_is_paused(&env) {
+            return Err(VaultError::VaultPaused);
+        }
+        if shares <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        let user_balance = get_balance(&env, &caller);
+        if user_balance < shares {
+            return Err(VaultError::InsufficientShares);
+        }
+
+        let total_shares = get_total_shares(&env);
+        let total_deposited = get_total_deposited(&env);
+
+        // CEI — Effects: burn shares before interactions
+        let new_user_balance = user_balance - shares;
+        set_balance(&env, &caller, new_user_balance);
+        let new_total_shares = total_shares
+            .checked_sub(shares)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_shares(&env, new_total_shares);
+
+        let redeem_value = multi_asset::withdraw_basket(
+            &env,
+            &caller,
+            shares,
+            total_shares,
+            total_deposited,
+        )?;
+
+        let new_total_deposited = total_deposited
+            .checked_sub(redeem_value)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_deposited(&env, new_total_deposited);
+
+        bump_persistent(&env, &caller);
+        bump_instance(&env);
+
+        Ok(redeem_value)
+    }
+
+    /// Return the basket total value in reference denomination.
+    ///
+    /// Computed as the sum of `asset_balance * weight / 10_000` for each
+    /// registered basket asset. Returns 0 if no assets are registered.
+    ///
+    /// Read-only; no authorization required.
+    pub fn basket_total_assets(env: Env) -> i128 {
+        multi_asset::basket_total_assets(&env)
+    }
+
+    /// Return all registered basket asset addresses.
+    ///
+    /// Read-only; no authorization required.
+    pub fn basket_assets(env: Env) -> Vec<Address> {
+        multi_asset::basket_assets(&env)
+    }
+
+    /// Return the configured weight (bps) for a specific basket asset.
+    ///
+    /// Returns 0 if the asset is not registered.
+    /// Read-only; no authorization required.
+    pub fn asset_weight(env: Env, token: Address) -> u32 {
+        multi_asset::asset_weight(&env, &token)
+    }
+
+    /// Return the vault's tracked balance for a specific basket asset.
+    ///
+    /// Returns 0 if the asset is not registered or has a zero balance.
+    /// Read-only; no authorization required.
+    pub fn asset_balance(env: Env, token: Address) -> i128 {
+        multi_asset::asset_balance(&env, &token)
     }
 
     // -----------------------------------------------------------------------
@@ -2149,7 +2456,12 @@ impl AuraVault {
             21 => Some(VaultError::QueueEntryNotFound.message()),
             22 => Some(VaultError::QueueUnbondingPending.message()),
             23 => Some(VaultError::InvalidWithdrawalFee.message()),
-            24 => Some(VaultError::CircuitBreakerTripped.message()),
+            24 => Some(VaultError::TransferFailed.message()),
+            25 => Some(VaultError::OraclePriceZero.message()),
+            26 => Some(VaultError::OraclePriceTooHigh.message()),
+            27 => Some(VaultError::OraclePriceStale.message()),
+            28 => Some(VaultError::FeeExceedsMaximum.message()),
+            29 => Some(VaultError::CircuitBreakerTripped.message()),
             _  => None,
         };
         msg.map(|s| soroban_sdk::String::from_str(&env, s))

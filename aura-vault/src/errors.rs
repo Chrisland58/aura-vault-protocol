@@ -260,4 +260,28 @@ pub enum VaultError {
     /// Oracle data is stale: the `updated_at` timestamp is older than the
     /// configured maximum age.
     OraclePriceStale       = 27,
+
+    // -----------------------------------------------------------------------
+    // 28–29: Fee configuration / circuit-breaker errors
+    // -----------------------------------------------------------------------
+
+    /// The requested harvest fee exceeds the maximum allowed rate.
+    ///
+    /// **Trigger:** `set_fee(bps, recipient)` called with `bps > 1_000`
+    /// (i.e., more than 10 %). The protocol enforces a hard cap on harvest
+    /// fees to protect depositors.
+    ///
+    /// **Resolution:** Use a `bps` value in the range `0–1_000` (0–10 %).
+    FeeExceedsMaximum      = 28,
+
+    /// The circuit breaker has tripped and auto-paused the vault.
+    ///
+    /// **Trigger:** A single harvest would move the share price by more than
+    /// the configured `price_movement_limit`. The vault has been automatically
+    /// paused and a `suspicious` event has been emitted.
+    ///
+    /// **Resolution:** Review the harvest amount for anomalies, investigate
+    /// the `suspicious` event, and call `unpause()` after confirming the vault
+    /// state is correct.
+    CircuitBreakerTripped  = 29,
 }
