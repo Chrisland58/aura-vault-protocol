@@ -108,7 +108,19 @@ export const backfillSchema = z.object({
   endDate: z.string().datetime(),
 });
 
+export const depositSimulateSchema = z.object({
+  /**
+   * Underlying token amount to simulate depositing.
+   * Must be a positive integer (vault uses integer arithmetic on-chain).
+   */
+  amount: z
+    .number({ required_error: "amount is required" })
+    .int("amount must be an integer")
+    .positive("amount must be greater than 0"),
+});
+
 export type LoginInput = z.infer<typeof loginSchema>;
 export type RefreshInput = z.infer<typeof refreshSchema>;
 export type PortfolioPaginationInput = z.infer<typeof portfolioPaginationSchema>;
 export type YieldCalculateInput = z.infer<typeof yieldCalculateSchema>;
+export type DepositSimulateInput = z.infer<typeof depositSimulateSchema>;
