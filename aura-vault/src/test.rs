@@ -664,3 +664,235 @@ fn test_cannot_vote_twice() {
     let result = vault.try_vote(&signers[0], &proposal_id, &false);
     assert_eq!(result, Err(Ok(VaultError::InvalidAddress)));
 }
+
+// ---------------------------------------------------------------------------
+// 14. Share price floor / high-water-mark (#373)
+// ---------------------------------------------------------------------------
+
+// HWM is 0 before any harvest.
+#[test]
+fn test_high_water_mark_starts_at_zero() {
+    let (_env, vault, _admin, _token) = setup();
+    assert_eq!(vault.high_water_mark(), 0);
+}
+
+// After a harvest the HWM is recorded as total_deposited × PRICE_SCALE / total_shares.
+#[test]
+fn test_high_water_mark_updated_on_harvest() {
+    let (env, vault, admin, token) = setup();
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 1_000_000);
+    vault.deposit(&user, &1_000_000);
+
+    mint(&env, &token, &admin, &admin, 500_000);
+    vault.harvest(&admin, &500_000);
+
+    // total_deposited = 1_500_000, total_shares = 1_000_000
+    // price = 1_500_000 × 10_000_000 / 1_000_000 = 15_000_000
+    assert_eq!(vault.high_water_mark(), 15_000_000);
+}
+
+// Second harvest only moves HWM up, never down.
+#[test]
+fn test_high_water_mark_only_increases() {
+    let (env, vault, admin, token) = setup();
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 1_000_000);
+    vault.deposit(&user, &1_000_000);
+
+    // First harvest: price → 15_000_000
+    mint(&env, &token, &admin, &admin, 500_000);
+    vault.harvest(&admin, &500_000);
+    let hwm_after_first = vault.high_water_mark();
+
+    // Deposit more — dilutes price back toward 1:1 in terms of share price
+    let user2 = Address::generate(&env);
+    mint(&env, &token, &admin, &user2, 1_500_000);
+    vault.deposit(&user2, &1_500_000);
+
+    // Second harvest injects a tiny amount — new price is lower than peak
+    mint(&env, &token, &admin, &admin, 1);
+    vault.harvest(&admin, &1);
+
+    // HWM should not have decreased
+    assert_eq!(vault.high_water_mark(), hwm_after_first);
+}
+
+// A normal withdrawal that keeps the share price at or above the floor passes.
+#[test]
+fn test_withdraw_within_floor_succeeds() {
+    let (env, vault, admin, token) = setup();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    mint(&env, &token, &admin, &alice, 1_000_000);
+    mint(&env, &token, &admin, &bob, 1_000_000);
+    vault.deposit(&alice, &1_000_000);
+    vault.deposit(&bob, &1_000_000);
+
+    // Harvest to set HWM: 2_500_000 assets / 2_000_000 shares → price 12_500_000
+    mint(&env, &token, &admin, &admin, 500_000);
+    vault.harvest(&admin, &500_000);
+
+    // Alice withdraws all her shares; Bob remains so price stays the same for remaining shares.
+    // remaining: 1_250_000 assets / 1_000_000 shares → same price → no breach
+    vault.withdraw(&alice, &1_000_000);
+    assert!(vault.total_assets() > 0);
+}
+
+// Withdraw that would drop share price below 99% of HWM returns PriceFloorBreached.
+#[test]
+fn test_withdraw_breaching_floor_reverts() {
+    let (env, vault, admin, token) = setup();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // alice deposits 1, bob deposits 1_000_000 — almost all assets belong to bob
+    mint(&env, &token, &admin, &alice, 1_000_000);
+    vault.deposit(&alice, &1_000_000);
+
+    mint(&env, &token, &admin, &bob, 1_000_000);
+    vault.deposit(&bob, &1_000_000);
+
+    // Harvest: price rises, HWM set.  total = 2_100_000, shares = 2_000_000
+    // price_after_harvest = 2_100_000 × 10_000_000 / 2_000_000 = 10_500_000
+    mint(&env, &token, &admin, &admin, 100_000);
+    vault.harvest(&admin, &100_000);
+
+    // Now: alice tries to withdraw almost all shares leaving almost nothing in the vault.
+    // Withdraw 1_999_999 shares out of 2_000_000 → 1 share left.
+    // remaining assets = floor(2_100_000 - (1_999_999 × 2_100_000 / 2_000_000))
+    //                  = 2_100_000 - 2_099_998 = 2 (very roughly)
+    // new price = 2 × 10_000_000 / 1 = 20_000_000 — actually this would be higher.
+    //
+    // Instead test the known-failing case: a large depositor exits almost entirely
+    // while a tiny remainder would drop price severely.
+    //
+    // Simple setup: 10M shares, 11M assets (HWM = 11_000_000).
+    // Withdraw 9_999_999 shares → 1 share left, assets ≈ 1.1
+    // price ≈ 1 → far below floor (10_890_000).
+    let (env2, vault2, admin2, token2) = setup();
+    let big = Address::generate(&env2);
+    mint(&env2, &token2, &admin2, &big, 10_000_000);
+    vault2.deposit(&big, &10_000_000);
+
+    mint(&env2, &token2, &admin2, &admin2, 1_000_000);
+    vault2.harvest(&admin2, &1_000_000);
+    // HWM = 11_000_000 × 10_000_000 / 10_000_000 = 11_000_000
+
+    let result = vault2.try_withdraw(&big, &9_999_999);
+    assert_eq!(result, Err(Ok(VaultError::PriceFloorBreached)));
+}
+
+// Admin can disable the floor, allowing a large withdrawal through.
+#[test]
+fn test_disable_floor_allows_large_withdrawal() {
+    let (env, vault, admin, token) = setup();
+    let big = Address::generate(&env);
+    mint(&env, &token, &admin, &big, 10_000_000);
+    vault.deposit(&big, &10_000_000);
+
+    mint(&env, &token, &admin, &admin, 1_000_000);
+    vault.harvest(&admin, &1_000_000);
+
+    // Without bypass this would breach the floor
+    assert_eq!(
+        vault.try_withdraw(&big, &9_999_999),
+        Err(Ok(VaultError::PriceFloorBreached))
+    );
+
+    // Admin disables floor
+    vault.disable_floor(&admin);
+
+    // Same withdrawal now succeeds
+    let received = vault.withdraw(&big, &9_999_999);
+    assert!(received > 0);
+}
+
+// Admin can re-enable the floor after disabling it.
+#[test]
+fn test_enable_floor_re_enforces_protection() {
+    let (env, vault, admin, token) = setup();
+    let big = Address::generate(&env);
+    mint(&env, &token, &admin, &big, 10_000_000);
+    vault.deposit(&big, &10_000_000);
+
+    mint(&env, &token, &admin, &admin, 1_000_000);
+    vault.harvest(&admin, &1_000_000);
+
+    vault.disable_floor(&admin);
+    vault.enable_floor(&admin);
+
+    // Floor is back — large withdrawal should revert again
+    assert_eq!(
+        vault.try_withdraw(&big, &9_999_999),
+        Err(Ok(VaultError::PriceFloorBreached))
+    );
+}
+
+// Full exit (last shareholder) is always allowed regardless of floor.
+#[test]
+fn test_full_exit_not_blocked_by_floor() {
+    let (env, vault, admin, token) = setup();
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 1_000_000);
+    vault.deposit(&user, &1_000_000);
+
+    mint(&env, &token, &admin, &admin, 500_000);
+    vault.harvest(&admin, &500_000);
+
+    // Sole depositor withdraws everything — new_total_shares_after = 0, check skipped
+    let received = vault.withdraw(&user, &1_000_000);
+    assert_eq!(received, 1_500_000);
+    assert_eq!(vault.total_assets(), 0);
+}
+
+// Non-admin cannot disable the floor.
+#[test]
+fn test_non_admin_cannot_disable_floor() {
+    let (env, vault, _admin, _token) = setup();
+    let stranger = Address::generate(&env);
+    let result = vault.try_disable_floor(&stranger);
+    assert_eq!(result, Err(Ok(VaultError::UpgradeUnauthorized)));
+}
+
+// Non-admin cannot enable the floor.
+#[test]
+fn test_non_admin_cannot_enable_floor() {
+    let (env, vault, admin, _token) = setup();
+    vault.disable_floor(&admin);
+    let stranger = Address::generate(&env);
+    let result = vault.try_enable_floor(&stranger);
+    assert_eq!(result, Err(Ok(VaultError::UpgradeUnauthorized)));
+}
+
+// HWM is queryable and reflects multiple harvests.
+#[test]
+fn test_high_water_mark_reflects_peak_across_multiple_harvests() {
+    let (env, vault, admin, token) = setup();
+    let user = Address::generate(&env);
+    mint(&env, &token, &admin, &user, 1_000_000);
+    vault.deposit(&user, &1_000_000);
+
+    // First harvest: 1_500_000 / 1_000_000 → 15_000_000
+    mint(&env, &token, &admin, &admin, 500_000);
+    vault.harvest(&admin, &500_000);
+    assert_eq!(vault.high_water_mark(), 15_000_000);
+
+    // Second harvest: 2_000_000 / 1_000_000 → 20_000_000
+    mint(&env, &token, &admin, &admin, 500_000);
+    vault.harvest(&admin, &500_000);
+    assert_eq!(vault.high_water_mark(), 20_000_000);
+
+    // A new depositor doubles the shares but price stays the same — HWM unchanged
+    let user2 = Address::generate(&env);
+    mint(&env, &token, &admin, &user2, 2_000_000);
+    vault.deposit(&user2, &2_000_000);
+
+    // Tiny harvest — price slightly above 1:1 ratio, below peak
+    mint(&env, &token, &admin, &admin, 1);
+    vault.harvest(&admin, &1);
+
+    // HWM should still be the previous peak
+    assert_eq!(vault.high_water_mark(), 20_000_000);
+}

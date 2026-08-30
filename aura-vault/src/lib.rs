@@ -17,7 +17,8 @@ use storage::{
     bump_instance, bump_persistent, get_admin, get_balance, get_layout_version, get_token,
     get_total_deposited, get_total_shares, get_version, is_paused as storage_is_paused, set_admin,
     set_balance, set_layout_version, set_paused, set_token, set_total_deposited, set_total_shares,
-    set_version, CURRENT_LAYOUT_VERSION,
+    set_version, CURRENT_LAYOUT_VERSION, PRICE_SCALE,
+    get_high_water_mark, set_high_water_mark, is_floor_disabled, set_floor_disabled,
 };
 use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
@@ -186,6 +187,39 @@ impl AuraVault {
             return Err(VaultError::InsufficientUnderlying);
         }
 
+        // Price-floor check: after this withdrawal, the new share price must not drop
+        // below 99% of the high-water mark.  Skip when the floor is disabled by admin.
+        if !is_floor_disabled(&env) {
+            let new_total_deposited_after = total_deposited
+                .checked_sub(redeem_amount)
+                .ok_or(VaultError::MathOverflow)?;
+            let new_total_shares_after = total_shares
+                .checked_sub(shares)
+                .ok_or(VaultError::MathOverflow)?;
+
+            // Only check when shares remain; if everyone exits there is nothing to protect.
+            if new_total_shares_after > 0 {
+                let hwm = get_high_water_mark(&env);
+                if hwm > 0 {
+                    // new_price = new_total_deposited_after × PRICE_SCALE / new_total_shares_after
+                    let new_price = new_total_deposited_after
+                        .checked_mul(PRICE_SCALE)
+                        .ok_or(VaultError::MathOverflow)?
+                        .checked_div(new_total_shares_after)
+                        .ok_or(VaultError::MathOverflow)?;
+                    // floor = hwm × 99 / 100
+                    let floor = hwm
+                        .checked_mul(99)
+                        .ok_or(VaultError::MathOverflow)?
+                        .checked_div(100)
+                        .ok_or(VaultError::MathOverflow)?;
+                    if new_price < floor {
+                        return Err(VaultError::PriceFloorBreached);
+                    }
+                }
+            }
+        }
+
         // CEI — Effects first: burn shares before token transfer
         let new_balance = user_balance - shares;
         set_balance(&env, &caller, new_balance);
@@ -270,6 +304,18 @@ impl AuraVault {
         // Effects: increase total deposited with net yield; accumulate fees
         set_total_deposited(&env, new_total);
         storage::set_total_fee_collected(&env, new_fees);
+
+        // High-water-mark: update if new share price exceeds previous peak.
+        // share_price = new_total × PRICE_SCALE / total_shares
+        let new_price = new_total
+            .checked_mul(PRICE_SCALE)
+            .ok_or(VaultError::MathOverflow)?
+            .checked_div(total_shares)
+            .ok_or(VaultError::MathOverflow)?;
+        let current_hwm = get_high_water_mark(&env);
+        if new_price > current_hwm {
+            set_high_water_mark(&env, new_price);
+        }
 
         env.events().publish(
             (Symbol::new(&env, "harvest"), caller.clone(), yield_amount),
@@ -484,6 +530,44 @@ impl AuraVault {
     // -----------------------------------------------------------------------
     pub fn balance_of(env: Env, address: Address) -> i128 {
         get_balance(&env, &address)
+    }
+
+    // -----------------------------------------------------------------------
+    // high_water_mark  (read-only)
+    // Returns the highest share price ever recorded (scaled by PRICE_SCALE = 1e7).
+    // A value of 0 means no harvest has occurred yet.
+    // -----------------------------------------------------------------------
+    pub fn high_water_mark(env: Env) -> i128 {
+        get_high_water_mark(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // disable_floor / enable_floor  — admin-only floor bypass
+    // Allows the admin to temporarily disable the price-floor check for a
+    // legitimate large withdrawal that would otherwise breach the 1% band.
+    // -----------------------------------------------------------------------
+    pub fn disable_floor(env: Env, admin: Address) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_floor_disabled(&env, true);
+        env.events().publish((Symbol::new(&env, "floor_disabled"),), ());
+        bump_instance(&env);
+        Ok(())
+    }
+
+    pub fn enable_floor(env: Env, admin: Address) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_floor_disabled(&env, false);
+        env.events().publish((Symbol::new(&env, "floor_enabled"),), ());
+        bump_instance(&env);
+        Ok(())
     }
 
     // -----------------------------------------------------------------------

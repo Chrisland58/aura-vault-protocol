@@ -18,6 +18,10 @@ pub enum DataKey {
     LastMgmtFeeTime,
     /// Whitelisted alternative yield tokens (Issue #48)
     YieldToken(Address),
+    /// Highest share price (total_deposited × PRICE_SCALE / total_shares) ever recorded.
+    HighWaterMark,
+    /// When true, the price-floor check in withdraw is bypassed (admin-only toggle).
+    FloorDisabled,
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -197,4 +201,36 @@ pub fn is_paused(env: &Env) -> bool {
 
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&DataKey::Paused, &paused);
+}
+
+// ---------------------------------------------------------------------------
+// High-water-mark / price-floor helpers (instance storage)
+// ---------------------------------------------------------------------------
+
+/// Scale factor used to represent share price as an integer.
+/// share_price = total_deposited × PRICE_SCALE / total_shares
+pub const PRICE_SCALE: i128 = 10_000_000; // 1e7
+
+pub fn get_high_water_mark(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::HighWaterMark)
+        .unwrap_or(0)
+}
+
+pub fn set_high_water_mark(env: &Env, price: i128) {
+    env.storage().instance().set(&DataKey::HighWaterMark, &price);
+}
+
+pub fn is_floor_disabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::FloorDisabled)
+        .unwrap_or(false)
+}
+
+pub fn set_floor_disabled(env: &Env, disabled: bool) {
+    env.storage()
+        .instance()
+        .set(&DataKey::FloorDisabled, &disabled);
 }

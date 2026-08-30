@@ -18,4 +18,6 @@ pub enum VaultError {
     StorageLayoutMismatch  = 10,
     VaultPaused            = 11,
     BalanceMismatch        = 12,
+    /// Share price dropped below the high-water-mark floor (99% of peak price).
+    PriceFloorBreached     = 13,
 }

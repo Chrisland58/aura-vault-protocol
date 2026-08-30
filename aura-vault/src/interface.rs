@@ -18,6 +18,9 @@ pub trait AuraVaultTrait {
     fn total_assets(env: Env) -> i128;
     fn balance_of(env: Env, address: Address) -> i128;
     fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), VaultError>;
+    fn high_water_mark(env: Env) -> i128;
+    fn disable_floor(env: Env, admin: Address) -> Result<(), VaultError>;
+    fn enable_floor(env: Env, admin: Address) -> Result<(), VaultError>;
     fn propose_update_admin(env: Env, proposer: Address, new_admin: Address) -> Result<u64, VaultError>;
     fn propose_update_token(env: Env, proposer: Address, new_token: Address) -> Result<u64, VaultError>;
     fn propose_parameter_update(env: Env, proposer: Address, name: Symbol, value: i128) -> Result<u64, VaultError>;
