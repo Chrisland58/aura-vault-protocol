@@ -19,6 +19,7 @@ import { webhookRouter } from "./webhook.js";
 import portfolioRouter from "./portfolio.js";
 import { emailRouter } from "./routes/emailRoutes.js";
 import { gasRouter } from "./routes/gasRoutes.js";
+import { referralRouter } from "./routes/referralRoutes.js";
 import { startWorker, stopWorker } from "./queue.js";
 import { warmCache } from "./services/defi.js";
 import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
@@ -82,6 +83,7 @@ app.use("/api/webhooks", authenticate, webhookRouter);
 app.use("/api/email", emailRouter);
 app.use("/api/v1/user/portfolio", authenticate, portfolioRouter);
 app.use("/api/v1/gas", gasRouter);
+app.use("/api/referrals", referralRouter);
 
 app.get("/api/health", async (_req, res) => {
   const redisHealthy = await pingRedis();
