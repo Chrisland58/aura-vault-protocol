@@ -4,6 +4,7 @@ global:
 
 rule_files:
   - "alert.rules.yml"
+  - "ssl-cert-alerts.yml"
 
 alerting:
   alertmanagers:
@@ -37,3 +38,13 @@ scrape_configs:
       - targets: ["host.docker.internal:9100"]
         labels:
           service: "node-exporter"
+
+  # Scrapes the ssl_cert_expiry_days gauge exposed by the Aura Vault backend
+  - job_name: "ssl-cert-expiry"
+    metrics_path: /metrics
+    scrape_interval: 1h
+    static_configs:
+      - targets: ["host.docker.internal:3001"]
+        labels:
+          service: "ssl-cert-expiry"
+          environment: "production"

@@ -22,6 +22,8 @@ import { gasRouter } from "./routes/gasRoutes.js";
 import { startWorker, stopWorker } from "./queue.js";
 import { warmCache } from "./services/defi.js";
 import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
+import { startSslCron, stopSslCron } from "./services/sslCertCron.js";
+import { sslRouter, metricsRouter } from "./routes/sslRoutes.js";
 
 const app = express();
 app.use(cors());
@@ -82,6 +84,8 @@ app.use("/api/webhooks", authenticate, webhookRouter);
 app.use("/api/email", emailRouter);
 app.use("/api/v1/user/portfolio", authenticate, portfolioRouter);
 app.use("/api/v1/gas", gasRouter);
+app.use("/api/v1/ssl", sslRouter);
+app.use("/metrics", metricsRouter);
 
 app.get("/api/health", async (_req, res) => {
   const redisHealthy = await pingRedis();
@@ -96,6 +100,7 @@ const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
 const server = app.listen(PORT, () => {
   startWorker();
   startEmailWorker();
+  startSslCron();
   void warmCache();
   console.log(`Aura Vault backend running on port ${PORT}`);
 });
@@ -104,6 +109,7 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`[shutdown] received ${signal}`);
   stopWorker();
   stopEmailWorker();
+  stopSslCron();
   server.close(async () => {
     await disconnectRedis().catch((err) => {
       console.error("[shutdown] redis disconnect failed:", err);
