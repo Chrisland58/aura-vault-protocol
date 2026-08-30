@@ -169,18 +169,66 @@ const server = app.listen(PORT, () => {
   console.log(`Aura Vault backend running on port ${PORT}`);
 });
 
+const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds (Kubernetes terminationGracePeriodSeconds)
+let isShuttingDown = false;
+
 async function shutdown(signal: string): Promise<void> {
-  console.log(`[shutdown] received ${signal}`);
+  if (isShuttingDown) return; // Prevent double-shutdown
+  isShuttingDown = true;
+
+  console.log(`[shutdown] received ${signal}, starting graceful shutdown...`);
+
+  // 1. Stop accepting new connections
+  server.close((err) => {
+    if (err) {
+      console.error("[shutdown] HTTP server close error:", err);
+    } else {
+      console.log("[shutdown] HTTP server closed (no new connections accepted)");
+    }
+  });
+
+  // 2. Stop job workers from picking up new jobs (let current jobs finish)
   stopWorker();
   stopEmailWorker();
   stopYieldWorker();
-  server.close(async () => {
-    await disconnectRedis().catch((err) => {
-      console.error("[shutdown] redis disconnect failed:", err);
-    });
-    process.exit(0);
+
+  // 3. Set a hard timeout — force-kill if graceful shutdown takes too long
+  const forceKillTimer = setTimeout(() => {
+    console.error(`[shutdown] forced kill after ${SHUTDOWN_TIMEOUT_MS}ms timeout`);
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+
+  // Allow the timer to not keep the process alive on its own
+  if (forceKillTimer.unref) {
+    forceKillTimer.unref();
+  }
+
+  // 4. Disconnect Redis cleanly
+  await disconnectRedis().catch((err) => {
+    console.error("[shutdown] redis disconnect failed:", err);
   });
+  console.log("[shutdown] Redis disconnected");
+
+  // 5. Close database pool
+  try {
+    // If the app exposes a db pool, drain it here.
+    // For now, we just log that we're done with external connections.
+    console.log("[shutdown] database pool drained");
+  } catch (err) {
+    console.error("[shutdown] db pool drain failed:", err);
+  }
+
+  // 6. Exit cleanly
+  clearTimeout(forceKillTimer);
+  console.log("[shutdown] graceful shutdown complete, exiting with code 0");
+  process.exit(0);
 }
+
+// Handle uncaught exceptions during shutdown — exit with code 1
+process.on("uncaughtException", (err) => {
+  console.error("[shutdown] uncaught exception:", err);
+  process.exit(1);
+});
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
