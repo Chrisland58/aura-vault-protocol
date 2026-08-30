@@ -9,6 +9,7 @@ rule_files:
   - "alert.rules.yml"
   - "cdn-alerts.yml"
   - "sla-rules.yml"
+  - "backup-alerts.yml"
 
 alerting:
   alertmanagers:
@@ -152,3 +153,11 @@ scrape_configs:
       - targets: ["docker-exporter:9323"]
         labels:
           service: "docker"
+
+  # ── Pushgateway — receives metrics from batch jobs (backup, restore test) ──
+  - job_name: "pushgateway"
+    honor_labels: true   # preserve job/instance labels pushed by backup scripts
+    static_configs:
+      - targets: ["prometheus-pushgateway:9091"]
+        labels:
+          service: "pushgateway"

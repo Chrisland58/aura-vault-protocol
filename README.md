@@ -130,8 +130,23 @@ See [BLUE_GREEN_DEPLOYMENT.md](./BLUE_GREEN_DEPLOYMENT.md) for the complete runb
 - **[Deployment Guide](./DEPLOYMENT_GUIDE.md)** — Smart contract deployment to Stellar testnet/mainnet
 - **[Blue-Green Strategy](./BLUE_GREEN_DEPLOYMENT.md)** — Backend zero-downtime deployment runbook
 - **[Operations Runbook](./OPERATIONS_RUNBOOK.md)** — Day-to-day operational procedures
+- **[Backup & Recovery](./docs/backup-recovery.md)** — PostgreSQL backup, encryption, restore procedures
 - **[Governance](./GOVERNANCE.md)** — Multi-signature governance and timelock system
 - **[Security](./SECURITY.md)** — Security model, audit results, and vulnerability reporting
+
+## Database Backup
+
+Daily automated PostgreSQL backups with AES-256 encryption and S3 storage.
+
+| Feature | Implementation |
+|---|---|
+| Schedule | Daily 02:00 UTC via K8s CronJob |
+| Encryption | AES-256-CBC (PBKDF2, 600k iterations) + S3 SSE-KMS |
+| Retention | 30 days (STANDARD → STANDARD_IA → GLACIER_IR → expire) |
+| Restore testing | Weekly Sunday 04:00 UTC in CI |
+| Alerting | Prometheus alerts: `BackupMissed`, `BackupFailed`, `BackupRestoreTestFailed` |
+
+See [docs/backup-recovery.md](./docs/backup-recovery.md) for setup instructions and runbooks.
 
 ## License
 
