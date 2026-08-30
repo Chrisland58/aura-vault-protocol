@@ -45,6 +45,7 @@ import {
   loginSchema,
   refreshSchema,
 } from "./validation.js";
+import { loadSecretsAtStartup, startSecretsRefresh, stopSecretsRefresh } from "./secrets.js";
 
 const app = express();
 app.use(cors());
@@ -143,6 +144,15 @@ app.get("/api/health", async (_req, res) => {
 });
 
 const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
+
+// Preload secrets at startup, then start listening
+async function startApp(): Promise<void> {
+  await loadSecretsAtStartup();
+  startSecretsRefresh();
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises
+}
+void startApp();
+
 const server = app.listen(PORT, () => {
   startWorker();
   startEmailWorker();
@@ -153,6 +163,7 @@ const server = app.listen(PORT, () => {
 
 async function shutdown(signal: string): Promise<void> {
   console.log(`[shutdown] received ${signal}`);
+  stopSecretsRefresh();
   stopWorker();
   stopEmailWorker();
   stopYieldWorker();
