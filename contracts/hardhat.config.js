@@ -7,7 +7,14 @@ module.exports = {
     settings: { optimizer: { enabled: true, runs: 200 } },
   },
   paths: {
-    sources: "./access",
-    tests: "./access",
+    sources: "./strategy",
+    tests: "./strategy",
+    cache: "./cache",
+    artifacts: "./artifacts",
+  },
+  gasReporter: {
+    enabled: true,
+    currency: "USD",
+    noColors: false,
   },
 };

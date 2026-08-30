@@ -19,9 +19,14 @@ const fakeRedisClient = {
   quit: vi.fn().mockResolvedValue(undefined),
 };
 
+// disconnectRedis must be a stable function reference — not a vitest mock — so it
+// still resolves after the module registry is torn down (server.close callback fires
+// asynchronously after the test environment is destroyed).
+const stableDisconnect = () => Promise.resolve(undefined);
+
 vi.mock("../../redis.js", () => ({
   pingRedis: vi.fn().mockResolvedValue(true),
-  disconnectRedis: vi.fn().mockResolvedValue(undefined),
+  disconnectRedis: stableDisconnect,
   getRedis: vi.fn().mockReturnValue(fakeRedisClient),
 }));
 
@@ -137,7 +142,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  vi.restoreAllMocks();
+  vi.clearAllMocks();
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
