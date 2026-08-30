@@ -22,6 +22,10 @@ use storage::{
 use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
     get_proposal_status, ProposalStatus, ProposalType,
+    // Issue #375 — multi-sig
+    propose_operation, sign_operation, execute_multisig_op, get_operation_status,
+    apply_add_signer, apply_remove_signer, apply_set_threshold,
+    OpType, OpStatus,
 };
 
 #[contract]
@@ -79,6 +83,16 @@ impl AuraVault {
         // Flash-loan guard: actual token balance must equal tracked state before deposit.
         let balance_before = token.balance(&env.current_contract_address());
         let total_deposited = get_total_deposited(&env);
+
+        // TVL cap check — 0 means uncapped (set via multi-sig SetTvlCap operation)
+        let tvl_cap = storage::get_tvl_cap(&env);
+        if tvl_cap > 0 {
+            let projected = total_deposited.checked_add(amount).ok_or(VaultError::MathOverflow)?;
+            if projected > tvl_cap {
+                return Err(VaultError::ZeroAmount);
+            }
+        }
+
         if balance_before != total_deposited {
             env.events().publish(
                 (Symbol::new(&env, "suspicious"),),
@@ -517,11 +531,11 @@ impl AuraVault {
     // Governance Methods
     // -----------------------------------------------------------------------
 
-    pub fn propose_update_admin(env: Env, proposer: Address, new_admin: Address) -> Result<u64, VaultError> {
+    pub fn propose_update_admin(env: Env, proposer: Address, _new_admin: Address) -> Result<u64, VaultError> {
         create_proposal(&env, proposer, ProposalType::UpdateAdmin)
     }
 
-    pub fn propose_update_token(env: Env, proposer: Address, new_token: Address) -> Result<u64, VaultError> {
+    pub fn propose_update_token(env: Env, proposer: Address, _new_token: Address) -> Result<u64, VaultError> {
         create_proposal(&env, proposer, ProposalType::UpdateUnderlyingToken)
     }
 
@@ -531,7 +545,7 @@ impl AuraVault {
         name: Symbol,
         value: i128,
     ) -> Result<u64, VaultError> {
-        create_proposal(&env, proposer, ProposalType::UpdateParameter { name, value })
+        create_proposal(&env, proposer, ProposalType::UpdateParameter(name, value))
     }
 
     pub fn vote(
@@ -556,11 +570,148 @@ impl AuraVault {
     pub fn proposal_status(env: Env, proposal_id: u64) -> Option<soroban_sdk::String> {
         get_proposal_status(&env, proposal_id).map(|status| {
             match status {
-                ProposalStatus::Pending => soroban_sdk::String::from_str(&env, "Pending"),
-                ProposalStatus::Approved => soroban_sdk::String::from_str(&env, "Approved"),
+                ProposalStatus::Pending  => soroban_sdk::String::from_str(&env, "Pending"),
+                ProposalStatus::Ready    => soroban_sdk::String::from_str(&env, "Approved"),
                 ProposalStatus::Executed => soroban_sdk::String::from_str(&env, "Executed"),
-                ProposalStatus::Rejected => soroban_sdk::String::from_str(&env, "Rejected"),
+                ProposalStatus::Expired  => soroban_sdk::String::from_str(&env, "Rejected"),
             }
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-sig admin operations (Issue #375)
+    // -----------------------------------------------------------------------
+
+    /// Propose a critical admin operation. The proposer is automatically
+    /// counted as the first signature.
+    ///
+    /// Events: `OperationProposed`
+    pub fn propose_operation(
+        env: Env,
+        proposer: Address,
+        op_type: OpType,
+    ) -> Result<u64, VaultError> {
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        let id = propose_operation(&env, proposer, op_type)?;
+        bump_instance(&env);
+        Ok(id)
+    }
+
+    /// Add a signature to an existing pending operation.
+    ///
+    /// Events: `OperationSigned`
+    pub fn sign_operation(
+        env: Env,
+        signer: Address,
+        op_id: u64,
+    ) -> Result<(), VaultError> {
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        sign_operation(&env, signer, op_id)?;
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Execute a Ready (threshold-met) operation. Applies the on-chain state
+    /// change and emits `OperationExecuted`.
+    pub fn execute_operation(
+        env: Env,
+        executor: Address,
+        op_id: u64,
+    ) -> Result<(), VaultError> {
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+
+        let op = execute_multisig_op(&env, executor, op_id)?;
+
+        // Apply the state change based on operation type
+        match op.op_type {
+            OpType::Upgrade(new_wasm_hash) => {
+                let current_version = get_layout_version(&env);
+                if current_version != storage::CURRENT_LAYOUT_VERSION {
+                    return Err(VaultError::StorageLayoutMismatch);
+                }
+                let old_v = get_version(&env);
+                set_version(&env, old_v + 1);
+                env.deployer().update_current_contract_wasm(new_wasm_hash);
+            }
+            OpType::SetPerfFee(bps) => {
+                storage::set_perf_fee_bps(&env, bps);
+            }
+            OpType::SetMgmtFee(bps) => {
+                storage::set_mgmt_fee_bps(&env, bps);
+            }
+            OpType::SetTvlCap(cap) => {
+                storage::set_tvl_cap(&env, cap);
+            }
+            OpType::AddSigner(signer) => {
+                apply_add_signer(&env, &signer)?;
+            }
+            OpType::RemoveSigner(signer) => {
+                apply_remove_signer(&env, &signer)?;
+            }
+            OpType::SetThreshold(threshold) => {
+                apply_set_threshold(&env, threshold)?;
+            }
+            // Legacy op types don't have automatic side effects in this path
+            _ => {}
+        }
+
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Read the status of a multi-sig operation as a string.
+    pub fn operation_status(env: Env, op_id: u64) -> Option<soroban_sdk::String> {
+        get_operation_status(&env, op_id).map(|status| match status {
+            OpStatus::Pending  => soroban_sdk::String::from_str(&env, "Pending"),
+            OpStatus::Ready    => soroban_sdk::String::from_str(&env, "Ready"),
+            OpStatus::Executed => soroban_sdk::String::from_str(&env, "Executed"),
+            OpStatus::Expired  => soroban_sdk::String::from_str(&env, "Expired"),
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Admin-set management (admin-gated convenience, e.g., for bootstrapping)
+    // -----------------------------------------------------------------------
+
+    /// Admin-only: add a signer to the multi-sig set directly.
+    pub fn add_signer(env: Env, admin: Address, new_signer: Address) -> Result<(), VaultError> {
+        let stored = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        apply_add_signer(&env, &new_signer)?;
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Admin-only: remove a signer from the multi-sig set directly.
+    pub fn remove_signer(env: Env, admin: Address, target: Address) -> Result<(), VaultError> {
+        let stored = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        apply_remove_signer(&env, &target)?;
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Admin-only: update the M-of-N threshold directly.
+    pub fn set_threshold(env: Env, admin: Address, threshold: u32) -> Result<(), VaultError> {
+        let stored = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        apply_set_threshold(&env, threshold)?;
+        bump_instance(&env);
+        Ok(())
     }
 }

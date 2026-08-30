@@ -18,4 +18,22 @@ pub enum VaultError {
     StorageLayoutMismatch  = 10,
     VaultPaused            = 11,
     BalanceMismatch        = 12,
+
+    // ---------------------------------------------------------------------------
+    // Multi-sig admin operations (Issue #375)
+    // ---------------------------------------------------------------------------
+    /// Caller is not in the multi-sig signer set
+    NotASigner             = 13,
+    /// Proposal/operation ID does not exist
+    OperationNotFound      = 14,
+    /// Operation has passed its 72-hour expiry window
+    OperationExpired       = 15,
+    /// This signer has already signed this operation
+    OperationAlreadySigned = 16,
+    /// Operation has already been executed
+    OperationAlreadyExecuted = 17,
+    /// Not enough signatures collected to meet the M-of-N threshold
+    ThresholdNotMet        = 18,
+    /// Attempt to set an invalid threshold (0 or > signer count)
+    InvalidThreshold       = 19,
 }

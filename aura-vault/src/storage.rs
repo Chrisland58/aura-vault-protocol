@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, Address, Env, Vec};
 
 #[contracttype]
 pub enum DataKey {
@@ -18,6 +18,20 @@ pub enum DataKey {
     LastMgmtFeeTime,
     /// Whitelisted alternative yield tokens (Issue #48)
     YieldToken(Address),
+
+    // ---------------------------------------------------------------------------
+    // Multi-sig admin operations (Issue #375)
+    // ---------------------------------------------------------------------------
+    /// Ordered list of current multi-sig signers
+    MultiSigSigners,
+    /// M (threshold) — number of signatures required to execute an operation
+    MultiSigThreshold,
+    /// Monotonically increasing operation counter
+    MultiSigOpCount,
+    /// Per-signer vote record — prevents double-signing. Tuple: (op_id, signer).
+    MultiSigVote(u64, Address),
+    /// TVL cap — maximum total_deposited allowed (0 = uncapped)
+    TvlCap,
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -197,4 +211,77 @@ pub fn is_paused(env: &Env) -> bool {
 
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&DataKey::Paused, &paused);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-sig storage helpers (Issue #375)
+// ---------------------------------------------------------------------------
+
+/// Default threshold is 2-of-N (overridden after signer set grows).
+pub const DEFAULT_THRESHOLD: u32 = 2;
+/// Operations expire 72 hours after proposal.
+pub const MULTISIG_EXPIRY_SECS: u64 = 72 * 60 * 60;
+
+pub fn get_multisig_signers(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::MultiSigSigners)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_multisig_signers(env: &Env, signers: &Vec<Address>) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MultiSigSigners, signers);
+}
+
+pub fn get_multisig_threshold(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MultiSigThreshold)
+        .unwrap_or(DEFAULT_THRESHOLD)
+}
+
+pub fn set_multisig_threshold(env: &Env, threshold: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MultiSigThreshold, &threshold);
+}
+
+pub fn get_multisig_op_count(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MultiSigOpCount)
+        .unwrap_or(0)
+}
+
+pub fn set_multisig_op_count(env: &Env, count: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MultiSigOpCount, &count);
+}
+
+pub fn has_multisig_signed(env: &Env, op_id: u64, signer: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get::<DataKey, bool>(&DataKey::MultiSigVote(op_id, signer.clone()))
+        .unwrap_or(false)
+}
+
+pub fn record_multisig_vote(env: &Env, op_id: u64, signer: &Address) {
+    env.storage().instance().set(
+        &DataKey::MultiSigVote(op_id, signer.clone()),
+        &true,
+    );
+}
+
+pub fn get_tvl_cap(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TvlCap)
+        .unwrap_or(0) // 0 means uncapped
+}
+
+pub fn set_tvl_cap(env: &Env, cap: i128) {
+    env.storage().instance().set(&DataKey::TvlCap, &cap);
 }
