@@ -20,18 +20,11 @@ import {
 } from "./auth.js";
 import { pingRedis, disconnectRedis } from "./redis.js";
 import { webhookRouter } from "./webhook.js";
-import portfolioRouter from "./portfolio.js";
 import { emailRouter } from "./routes/emailRoutes.js";
-import { gasRouter } from "./routes/gasRoutes.js";
-import { yieldRouter } from "./routes/yieldRoutes.js";
 import { startWorker, stopWorker } from "./queue.js";
-import { queueRouter } from "./routes/queueRoutes.js";
-import { analyticsRouter } from "./routes/analyticsRoutes.js";
 import { warmCache } from "./services/defi.js";
 import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
 import { startYieldWorker, stopYieldWorker } from "./services/yieldWorker.js";
-import { vaultRouter } from "./routes/vaultRoutes.js";
-import { userPreferencesRouter } from "./routes/userPreferencesRoutes.js";
 import {
   applySecurityHeaders,
   corsOptions,
@@ -45,6 +38,10 @@ import {
   loginSchema,
   refreshSchema,
 } from "./validation.js";
+import { v1Router } from "./routes/v1Router.js";
+import { userPreferencesRouter } from "./routes/userPreferencesRoutes.js";
+import { docsRouter } from "./routes/docsRoutes.js";
+import { deprecationHeader, CURRENT_API_VERSION } from "./middleware/versionMiddleware.js";
 
 const app = express();
 app.use(cors());
@@ -125,13 +122,25 @@ app.post("/api/auth/revoke-all", authenticate, userRateLimiter(), async (req, re
 // ── A01 Broken Access Control: all protected routes use `authenticate` ────────
 app.use("/api/webhooks", authenticate, webhookRouter);
 app.use("/api/email", emailRouter);
-app.use("/api/v1/user/portfolio", authenticate, portfolioRouter);
-app.use("/api/v1/gas", gasRouter);
-app.use("/api/v1/yield", yieldRouter);
-app.use("/api/v1/queue", queueRouter);
-app.use("/api/v1/vault", vaultRouter);
-// Issue #318: User preferences — requires authentication
-app.use("/api/users/preferences", authenticate, userPreferencesRouter);
+
+// ── API versioning ────────────────────────────────────────────────────────
+// All v1 routes — versioned, response wrapped with { version: 'v1', data }
+app.use("/api/v1", v1Router);
+
+// /api/latest — always points to the current version (v1)
+app.use("/api/latest", v1Router);
+
+// Legacy unversioned preferences path — adds deprecation headers per RFC 8594
+// Clients should migrate to /api/v1/users/preferences
+app.use(
+  "/api/users/preferences",
+  deprecationHeader("2027-01-01"),
+  authenticate,
+  userPreferencesRouter
+);
+
+// API documentation endpoint
+app.use("/api/docs", docsRouter);
 
 app.get("/api/health", async (_req, res) => {
   const redisHealthy = await pingRedis();
