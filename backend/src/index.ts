@@ -14,6 +14,7 @@ import {
   generateTokens,
   getUserSessions,
   logout,
+  logoutAllDevices,
   refreshAccessToken,
   revokeAllSessions,
   type Tier,
@@ -110,8 +111,22 @@ app.post("/api/auth/logout", authenticate, userRateLimiter(), async (req, res) =
   }
 
   const { refreshToken } = req.body;
+  // Blacklist both access token (by JTI) and refresh token (by JTI)
+  // Blacklist TTLs match each token's remaining lifetime
   await logout(token, refreshToken);
   res.json({ success: true });
+});
+
+app.post("/api/auth/logout-all", authenticate, userRateLimiter(), async (req, res) => {
+  const userId = (req as any).user?.sub;
+  if (!userId) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  // Revoke all sessions: blacklists all stored refresh tokens for this user
+  await logoutAllDevices(userId);
+  res.json({ success: true, message: "All sessions revoked" });
 });
 
 app.get("/api/auth/sessions", authenticate, userRateLimiter(), async (req, res) => {

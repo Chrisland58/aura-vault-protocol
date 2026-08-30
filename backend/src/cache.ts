@@ -5,6 +5,7 @@ export const NS = {
   AUTH_BLACKLIST: "auth:blacklist",
   AUTH_REFRESH: "auth:refresh",
   AUTH_SESSIONS: "auth:sessions",
+  AUTH_SESSIONS_TOKENS: "auth:sessions:tokens", // per-session refresh token tracking for bulk logout
   API: "api",
   GAS_PRICE: "gas:price",
   GAS_HISTORY: "gas:history",
