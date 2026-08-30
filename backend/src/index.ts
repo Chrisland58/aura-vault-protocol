@@ -7,6 +7,11 @@ import {
   userRateLimiter,
 } from "./middleware/rateLimitMiddleware.js";
 import {
+  bodySizeLimit,
+  contentTypeEnforcement,
+  jsonBodyParser,
+} from "./middleware/requestValidationMiddleware.js";
+import {
   generateTokens,
   getUserSessions,
   logout,
@@ -28,7 +33,10 @@ import { startYieldWorker, stopYieldWorker } from "./services/yieldWorker.js";
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Issue #316: body size limit (64 KB) + Content-Type enforcement before parsing
+app.use(bodySizeLimit());
+app.use(contentTypeEnforcement());
+app.use(jsonBodyParser());
 app.use(globalIpRateLimiter(["/api/health"]));
 
 app.post("/api/auth/login", authRateLimiter(), async (req, res) => {
