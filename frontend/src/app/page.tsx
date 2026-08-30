@@ -24,55 +24,27 @@ export default function Home() {
           </h1>
           <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
             {t("home.instructions")}{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
+            <a href="https://vercel.com/templates?framework=next.js" className="font-medium text-zinc-950 dark:text-zinc-50">
               {t("home.templates")}
             </a>{" "}
             {t("home.or_the")}{" "}
-            <a
-              href="https://nextjs.org/learn"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
+            <a href="https://nextjs.org/learn" className="font-medium text-zinc-950 dark:text-zinc-50">
               {t("home.learning_center")}
             </a>
           </p>
         </div>
         <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="/dashboard"
-          >
+          <a className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]" href="/dashboard">
             {t("nav.dashboard", "Dashboard")}
           </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="/faq"
-          >
+          <a className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]" href="/faq">
             {t("nav.faq")}
           </a>
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
+          <a className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]" href="https://vercel.com/new" target="_blank" rel="noopener noreferrer">
+            <Image className="dark:invert" src="/vercel.svg" alt="Vercel logomark" width={16} height={16} />
             {t("home.deploy_now")}
           </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
+          <a className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]" href="https://nextjs.org/docs" target="_blank" rel="noopener noreferrer">
             {t("home.documentation")}
           </a>
         </div>

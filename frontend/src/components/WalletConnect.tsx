@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { ChevronDown } from "lucide-react";
+import { useOnboarding } from "@/components/OnboardingChecklist";
+import { ShareBalanceDisplay } from "@/components/ShareBalanceDisplay";
 
 interface WalletState {
   address: string | null;
@@ -39,6 +41,7 @@ export default function WalletConnect() {
   const [loading, setLoading] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [installedWallets, setInstalledWallets] = useState<WalletType[]>([]);
+  const { markComplete } = useOnboarding();
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -77,6 +80,7 @@ export default function WalletConnect() {
       setWallet(state);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       localStorage.setItem(LAST_WALLET_KEY, "freighter");
+      markComplete("connect_wallet");
       setShowDropdown(false);
     } catch (err: unknown) {
       setError((err instanceof Error ? err.message : "Failed to connect to Freighter") ?? "Failed to connect to Freighter");
@@ -107,6 +111,7 @@ export default function WalletConnect() {
       setWallet(state);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       localStorage.setItem(LAST_WALLET_KEY, "metamask");
+      markComplete("connect_wallet");
       setShowDropdown(false);
     } catch (err: unknown) {
       setError((err instanceof Error ? err.message : "Failed to connect to MetaMask") ?? "Failed to connect to MetaMask");
@@ -135,6 +140,7 @@ export default function WalletConnect() {
       setWallet(state);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       localStorage.setItem(LAST_WALLET_KEY, "coinbase");
+      markComplete("connect_wallet");
       setShowDropdown(false);
     } catch (err: unknown) {
       setError((err instanceof Error ? err.message : "Failed to connect to Coinbase Wallet") ?? "Failed to connect to Coinbase Wallet");
@@ -307,7 +313,15 @@ function PortfolioSection({ address }: { address: string }) {
         <div>
           <dt className="text-xs text-zinc-500 mb-1">Your Shares</dt>
           <dd data-cy="share-balance" className="font-mono text-sm font-semibold">
-            {data?.shareBalance ?? "—"}
+            {data?.shareBalance && data?.pricePerShare ? (
+              <ShareBalanceDisplay
+                shares={data.shareBalance}
+                sharePrice={data.pricePerShare}
+                variant="compact"
+              />
+            ) : (
+              data?.shareBalance ?? "—"
+            )}
           </dd>
         </div>
         <div>
