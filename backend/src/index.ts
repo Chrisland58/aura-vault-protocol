@@ -32,6 +32,7 @@ import { runCacheWarmup, getWarmupStatus } from "./services/cacheWarmup.js";
 import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
 import { startYieldWorker, stopYieldWorker } from "./services/yieldWorker.js";
 import { vaultRouter } from "./routes/vaultRoutes.js";
+import { vaultRegistryRouter } from "./routes/vaultRegistryRoutes.js";
 import { userPreferencesRouter } from "./routes/userPreferencesRoutes.js";
 import { leaderboardRouter } from "./routes/leaderboardRoutes.js";
 import {
@@ -132,6 +133,8 @@ app.use("/api/v1/gas", gasRouter);
 app.use("/api/v1/yield", yieldRouter);
 app.use("/api/v1/queue", queueRouter);
 app.use("/api/v1/vault", vaultRouter);
+// Issue #310: Multi-tenant vault registry — list/register/manage vault contract instances
+app.use("/api/v1/vaults", vaultRegistryRouter);
 // Issue #322: Public leaderboard endpoint — no auth required (truncated addresses only)
 app.use("/api/vault/leaderboard", leaderboardRouter);
 // Issue #318: User preferences — requires authentication
