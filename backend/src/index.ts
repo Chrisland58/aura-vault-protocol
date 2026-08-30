@@ -11,6 +11,18 @@ import {
   type Tier,
 } from "./auth.js";
 import { webhookRouter } from "./webhook.js";
+import portfolioRouter from "./portfolio.js";
+import { emailRouter } from "./routes/emailRoutes.js";
+import { vaultRouter } from "./routes/vaultRoutes.js";
+import { authenticate } from "./middleware/authMiddleware.js";
+import {
+  globalIpRateLimiter,
+  authRateLimiter,
+  userRateLimiter,
+} from "./middleware/rateLimitMiddleware.js";
+import { startWorker } from "./queue.js";
+import { warmCache } from "./services/defi.js";
+import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
 
 const app = express();
 app.use(cors());
@@ -74,8 +86,14 @@ app.get("/api/health", (_req, res) => {
 // Portfolio
 app.use("/api/v1/user/portfolio", authenticate, portfolioRouter);
 
+// Email
+app.use("/api/email", emailRouter);
+
+// ── Vault endpoints (Issue #302) ─────────────────────────────────────────────
+app.use("/api/v1/vault", vaultRouter);
+
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const server = app.listen(PORT, async () => {
   startWorker();
   console.log(`Aura Vault backend running on port ${PORT}`);
   await warmCache();
