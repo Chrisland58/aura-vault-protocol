@@ -29,6 +29,11 @@ import { startWorker, stopWorker } from "./queue.js";
 import { analyticsRouter } from "./routes/analyticsRoutes.js";
 import { warmCache } from "./services/defi.js";
 import { runCacheWarmup, getWarmupStatus } from "./services/cacheWarmup.js";
+import {
+  getCircuitBreakerState,
+  getCircuitBreakerStats,
+  getCircuitBreakerPrometheusText,
+} from "./services/horizonCircuitBreakerService.js";
 import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
 import { startYieldWorker, stopYieldWorker } from "./services/yieldWorker.js";
 import { vaultRouter } from "./routes/vaultRoutes.js";
@@ -140,6 +145,7 @@ app.use("/api/users/preferences", authenticate, userPreferencesRouter);
 app.get("/api/health", async (_req, res) => {
   const redisHealthy = await pingRedis();
   const warmup = getWarmupStatus();
+  const circuitState = getCircuitBreakerState();
 
   // Return 'starting' until cache warm-up completes (issue #325)
   let status: string;
@@ -155,8 +161,28 @@ app.get("/api/health", async (_req, res) => {
     status,
     redis: redisHealthy,
     warmup,
+    horizon_circuit: circuitState,
     timestamp: new Date().toISOString(),
   });
+});
+
+/**
+ * GET /api/metrics/horizon
+ * Prometheus text exposition for Horizon circuit breaker metrics.
+ * Issue #312: circuit state changes and call outcomes.
+ */
+app.get("/api/metrics/horizon", (_req, res) => {
+  const text = getCircuitBreakerPrometheusText();
+  res.set("Content-Type", "text/plain; version=0.0.4").send(text);
+});
+
+/**
+ * GET /api/metrics/horizon/stats
+ * JSON stats for the Horizon circuit breaker (for dashboards / admin).
+ */
+app.get("/api/metrics/horizon/stats", (_req, res) => {
+  const stats = getCircuitBreakerStats();
+  res.json({ success: true, data: stats });
 });
 
 const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
