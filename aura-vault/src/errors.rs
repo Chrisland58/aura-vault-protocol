@@ -262,26 +262,38 @@ pub enum VaultError {
     OraclePriceStale       = 27,
 
     // -----------------------------------------------------------------------
-    // 28–29: Fee configuration / circuit-breaker errors
+    // 28: Circuit breaker
     // -----------------------------------------------------------------------
 
-    /// The requested harvest fee exceeds the maximum allowed rate.
-    ///
-    /// **Trigger:** `set_fee(bps, recipient)` called with `bps > 1_000`
-    /// (i.e., more than 10 %). The protocol enforces a hard cap on harvest
-    /// fees to protect depositors.
-    ///
-    /// **Resolution:** Use a `bps` value in the range `0–1_000` (0–10 %).
-    FeeExceedsMaximum      = 28,
+    /// The circuit breaker tripped: share price movement exceeded the
+    /// configured limit in a single harvest. The vault has been automatically
+    /// paused. The admin must call `unpause()` after reviewing.
+    CircuitBreakerTripped  = 28,
 
-    /// The circuit breaker has tripped and auto-paused the vault.
+    // -----------------------------------------------------------------------
+    // 29–30: Deposit cap errors (Issue #338)
+    // -----------------------------------------------------------------------
+
+    /// The deposit would push the caller's total share balance above the
+    /// configured per-address deposit cap.
     ///
-    /// **Trigger:** A single harvest would move the share price by more than
-    /// the configured `price_movement_limit`. The vault has been automatically
-    /// paused and a `suspicious` event has been emitted.
+    /// **Trigger:** `deposit(amount)` called when `existing_shares + new_shares
+    /// > deposit_cap(caller)` and the caller is not on the cap whitelist.
     ///
-    /// **Resolution:** Review the harvest amount for anomalies, investigate
-    /// the `suspicious` event, and call `unpause()` after confirming the vault
-    /// state is correct.
-    CircuitBreakerTripped  = 29,
+    /// **Resolution:** Deposit a smaller amount, or ask the admin to raise /
+    /// remove your per-address cap with `set_deposit_cap` or add your address
+    /// to the whitelist with `add_cap_whitelist`.
+    DepositCapExceeded     = 29,
+
+    // -----------------------------------------------------------------------
+    // 30: Share transfer errors (Issue #340)
+    // -----------------------------------------------------------------------
+
+    /// A share transfer was attempted while the vault is paused.
+    ///
+    /// **Trigger:** `transfer`, `transfer_from`, or `approve` called while the
+    /// admin has activated the emergency pause.
+    ///
+    /// **Resolution:** Wait for the vault admin to call `unpause()`.
+    TransferNotAllowed     = 30,
 }

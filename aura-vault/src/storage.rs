@@ -55,22 +55,25 @@ pub enum DataKey {
     /// Maximum allowed share-price movement per harvest, in basis points.
     /// 0 = check disabled. Covers both up and down movements.
     PriceMovementLimit,
+
     // -----------------------------------------------------------------------
-    // Simple harvest fee (Issue #335)
+    // Deposit cap (Issue #338)
     // -----------------------------------------------------------------------
-    /// Simple harvest fee in basis points (0-1000, max 10%). Issue #335.
-    HarvestFeeBps,
-    /// Recipient address for harvest fee transfers. Issue #335.
-    HarvestFeeRecipient,
+    /// Per-address deposit cap: maximum underlying-token amount this address
+    /// may have deposited (i.e. max cumulative shares-expressed-as-tokens).
+    /// 0 = no per-address cap for this address.
+    DepositCap(Address),
+    /// Global deposit cap: maximum underlying-token amount any single address
+    /// may deposit. Applied when no per-address cap is set. 0 = disabled.
+    GlobalDepositCap,
+    /// Cap whitelist: addresses exempt from all deposit caps.
+    CapWhitelist(Address),
+
     // -----------------------------------------------------------------------
-    // Multi-asset basket (Issue #336)
+    // Share transferability (Issue #340)
     // -----------------------------------------------------------------------
-    /// List of registered basket asset token addresses.
-    BasketAssets,
-    /// Weight in basis points for a specific basket asset (must all sum to 10000).
-    AssetWeight(Address),
-    /// On-chain balance tracked per basket asset.
-    AssetBalance(Address),
+    /// Approval: spender → allowance granted by owner.
+    Allowance(Address, Address),
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -432,72 +435,71 @@ pub fn set_price_movement_limit(env: &Env, bps: u32) {
 }
 
 // ---------------------------------------------------------------------------
-// Harvest fee helpers (instance storage) — Issue #335
+// Deposit cap helpers (Issue #338)
 // ---------------------------------------------------------------------------
 
-/// Simple harvest fee rate in basis points. 0 = no fee. Max 1000 (10%).
-pub fn get_harvest_fee_bps(env: &Env) -> u32 {
-    env.storage().instance().get(&DataKey::HarvestFeeBps).unwrap_or(0)
-}
-
-pub fn set_harvest_fee_bps(env: &Env, bps: u32) {
-    env.storage().instance().set(&DataKey::HarvestFeeBps, &bps);
-}
-
-/// Recipient address for immediate harvest fee transfers.
-pub fn get_harvest_fee_recipient(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&DataKey::HarvestFeeRecipient)
-}
-
-pub fn set_harvest_fee_recipient(env: &Env, recipient: &Address) {
-    env.storage().instance().set(&DataKey::HarvestFeeRecipient, recipient);
-}
-
-// ---------------------------------------------------------------------------
-// Multi-asset basket storage helpers (Issue #336)
-// ---------------------------------------------------------------------------
-
-/// Return the list of basket asset token addresses (empty vec if none configured).
-pub fn get_basket_assets(env: &Env) -> soroban_sdk::Vec<Address> {
+/// Per-address deposit cap (in underlying token units). 0 = no cap.
+pub fn get_deposit_cap(env: &Env, addr: &Address) -> i128 {
     env.storage()
-        .instance()
-        .get(&DataKey::BasketAssets)
-        .unwrap_or_else(|| soroban_sdk::Vec::new(env))
-}
-
-/// Overwrite the entire basket assets list.
-pub fn set_basket_assets(env: &Env, assets: &soroban_sdk::Vec<Address>) {
-    env.storage().instance().set(&DataKey::BasketAssets, assets);
-}
-
-/// Get weight (bps) for a basket asset. Returns 0 if not registered.
-pub fn get_asset_weight(env: &Env, token: &Address) -> u32 {
-    env.storage()
-        .instance()
-        .get(&DataKey::AssetWeight(token.clone()))
+        .persistent()
+        .get(&DataKey::DepositCap(addr.clone()))
         .unwrap_or(0)
 }
 
-/// Set weight (bps) for a basket asset.
-pub fn set_asset_weight(env: &Env, token: &Address, weight: u32) {
-    env.storage()
-        .instance()
-        .set(&DataKey::AssetWeight(token.clone()), &weight);
-}
-
-/// Get tracked balance for a basket asset.
-pub fn get_asset_balance(env: &Env, token: &Address) -> i128 {
+pub fn set_deposit_cap(env: &Env, addr: &Address, cap: i128) {
     env.storage()
         .persistent()
-        .get(&DataKey::AssetBalance(token.clone()))
+        .set(&DataKey::DepositCap(addr.clone()), &cap);
+}
+
+/// Global deposit cap (in underlying token units). 0 = disabled.
+pub fn get_global_deposit_cap(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::GlobalDepositCap).unwrap_or(0)
+}
+
+pub fn set_global_deposit_cap(env: &Env, cap: i128) {
+    env.storage().instance().set(&DataKey::GlobalDepositCap, &cap);
+}
+
+/// Returns true if the address is on the cap whitelist (exempt from all caps).
+pub fn is_cap_whitelisted(env: &Env, addr: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::CapWhitelist(addr.clone()))
+        .unwrap_or(false)
+}
+
+pub fn set_cap_whitelist(env: &Env, addr: &Address, whitelisted: bool) {
+    env.storage()
+        .instance()
+        .set(&DataKey::CapWhitelist(addr.clone()), &whitelisted);
+}
+
+/// TTL bump for per-address deposit cap persistent entry.
+pub fn bump_deposit_cap_ttl(env: &Env, addr: &Address) {
+    let key = DataKey::DepositCap(addr.clone());
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Share transfer allowance helpers (Issue #340)
+// ---------------------------------------------------------------------------
+
+/// Get the spending allowance granted by `owner` to `spender`.
+pub fn get_allowance(env: &Env, owner: &Address, spender: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Allowance(owner.clone(), spender.clone()))
         .unwrap_or(0)
 }
 
-/// Set tracked balance for a basket asset.
-pub fn set_asset_balance(env: &Env, token: &Address, balance: i128) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::AssetBalance(token.clone()), &balance);
+/// Set the spending allowance granted by `owner` to `spender`.
+pub fn set_allowance(env: &Env, owner: &Address, spender: &Address, amount: i128) {
+    let key = DataKey::Allowance(owner.clone(), spender.clone());
+    env.storage().persistent().set(&key, &amount);
+    env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
 }
 
 /// A single entry in the withdrawal queue.
