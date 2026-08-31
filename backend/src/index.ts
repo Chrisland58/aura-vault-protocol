@@ -19,20 +19,20 @@ import {
   type Tier,
 } from "./auth.js";
 import { pingRedis, disconnectRedis } from "./redis.js";
-import { dbHealthCheck, getPoolStats, getPoolPrometheusMetrics, closePools } from "./db.js";
 import { webhookRouter } from "./webhook.js";
-import portfolioRouter from "./portfolio.js";
 import { emailRouter } from "./routes/emailRoutes.js";
 import { gasRouter } from "./routes/gasRoutes.js";
 import { yieldRouter } from "./routes/yieldRoutes.js";
-import { startWorker, stopWorker } from "./queue.js";
 import { queueRouter } from "./routes/queueRoutes.js";
+import { startWorker, stopWorker } from "./queue.js";
 import { analyticsRouter } from "./routes/analyticsRoutes.js";
 import { warmCache } from "./services/defi.js";
+import { runCacheWarmup, getWarmupStatus } from "./services/cacheWarmup.js";
 import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
 import { startYieldWorker, stopYieldWorker } from "./services/yieldWorker.js";
 import { vaultRouter } from "./routes/vaultRoutes.js";
 import { userPreferencesRouter } from "./routes/userPreferencesRoutes.js";
+import { leaderboardRouter } from "./routes/leaderboardRoutes.js";
 import {
   applySecurityHeaders,
   corsOptions,
@@ -46,7 +46,10 @@ import {
   loginSchema,
   refreshSchema,
 } from "./validation.js";
-import { loadSecretsAtStartup, startSecretsRefresh, stopSecretsRefresh } from "./secrets.js";
+import { v1Router } from "./routes/v1Router.js";
+import { userPreferencesRouter } from "./routes/userPreferencesRoutes.js";
+import { docsRouter } from "./routes/docsRoutes.js";
+import { deprecationHeader, CURRENT_API_VERSION } from "./middleware/versionMiddleware.js";
 
 const app = express();
 app.use(cors());
@@ -132,73 +135,45 @@ app.use("/api/v1/gas", gasRouter);
 app.use("/api/v1/yield", yieldRouter);
 app.use("/api/v1/queue", queueRouter);
 app.use("/api/v1/vault", vaultRouter);
+// Issue #322: Public leaderboard endpoint — no auth required (truncated addresses only)
+app.use("/api/vault/leaderboard", leaderboardRouter);
 // Issue #318: User preferences — requires authentication
 app.use("/api/users/preferences", authenticate, userPreferencesRouter);
 
 app.get("/api/health", async (_req, res) => {
   const redisHealthy = await pingRedis();
+  const warmup = getWarmupStatus();
+
+  // Return 'starting' until cache warm-up completes (issue #325)
+  let status: string;
+  if (warmup === "pending" || warmup === "warming") {
+    status = "starting";
+  } else if (!redisHealthy) {
+    status = "degraded";
+  } else {
+    status = "ok";
+  }
+
   res.json({
-    status: redisHealthy ? "ok" : "degraded",
+    status,
     redis: redisHealthy,
+    warmup,
     timestamp: new Date().toISOString(),
   });
 });
 
-/** GET /health/db — database pool health and per-pool stats */
-app.get("/health/db", async (_req, res) => {
-  try {
-    const [health, poolStats] = await Promise.all([
-      dbHealthCheck(),
-      Promise.resolve(getPoolStats()),
-    ]);
-    const allHealthy = health.write && health.read;
-    res.status(allHealthy ? 200 : 503).json({
-      status: allHealthy ? "ok" : "degraded",
-      pools: poolStats,
-      health,
-      config: {
-        minSize: parseInt(process.env.PG_POOL_MIN ?? "2", 10),
-        maxSize: parseInt(process.env.PG_POOL_MAX ?? "10", 10),
-        idleTimeoutMs: parseInt(process.env.PG_IDLE_TIMEOUT_MS ?? "30000", 10),
-      },
-      timestamp: new Date().toISOString(),
-    });
-  } catch (err) {
-    res.status(503).json({
-      status: "error",
-      error: "Database health check failed",
-      timestamp: new Date().toISOString(),
-    });
-  }
-});
-
-/** GET /metrics — Prometheus text-format metrics for pool utilisation */
-app.get("/metrics", (_req, res) => {
-  res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
-  res.send(getPoolPrometheusMetrics());
-});
-
 const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
-
-// Preload secrets at startup, then start listening
-async function startApp(): Promise<void> {
-  await loadSecretsAtStartup();
-  startSecretsRefresh();
-  // eslint-disable-next-line @typescript-eslint/no-misused-promises
-}
-void startApp();
-
 const server = app.listen(PORT, () => {
   startWorker();
   startEmailWorker();
   startYieldWorker();
-  void warmCache();
+  void warmCache();           // existing DeFi price warm-up
+  void runCacheWarmup();      // issue #325: vault stats / share price / top depositors
   console.log(`Aura Vault backend running on port ${PORT}`);
 });
 
 async function shutdown(signal: string): Promise<void> {
   console.log(`[shutdown] received ${signal}`);
-  stopSecretsRefresh();
   stopWorker();
   stopEmailWorker();
   stopYieldWorker();
