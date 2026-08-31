@@ -19,6 +19,7 @@ import {
   type Tier,
 } from "./auth.js";
 import { pingRedis, disconnectRedis } from "./redis.js";
+import { dbHealthCheck, getPoolStats, getPoolPrometheusMetrics, closePools } from "./db.js";
 import { webhookRouter } from "./webhook.js";
 import portfolioRouter from "./portfolio.js";
 import { emailRouter } from "./routes/emailRoutes.js";
@@ -141,6 +142,40 @@ app.get("/api/health", async (_req, res) => {
     redis: redisHealthy,
     timestamp: new Date().toISOString(),
   });
+});
+
+/** GET /health/db — database pool health and per-pool stats */
+app.get("/health/db", async (_req, res) => {
+  try {
+    const [health, poolStats] = await Promise.all([
+      dbHealthCheck(),
+      Promise.resolve(getPoolStats()),
+    ]);
+    const allHealthy = health.write && health.read;
+    res.status(allHealthy ? 200 : 503).json({
+      status: allHealthy ? "ok" : "degraded",
+      pools: poolStats,
+      health,
+      config: {
+        minSize: parseInt(process.env.PG_POOL_MIN ?? "2", 10),
+        maxSize: parseInt(process.env.PG_POOL_MAX ?? "10", 10),
+        idleTimeoutMs: parseInt(process.env.PG_IDLE_TIMEOUT_MS ?? "30000", 10),
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(503).json({
+      status: "error",
+      error: "Database health check failed",
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+/** GET /metrics — Prometheus text-format metrics for pool utilisation */
+app.get("/metrics", (_req, res) => {
+  res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+  res.send(getPoolPrometheusMetrics());
 });
 
 const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
