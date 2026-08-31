@@ -1,419 +1,414 @@
-use soroban_sdk::{contracttype, Address, Env, Vec, Symbol, String};
+//! Multi-sig admin operations (Issue #375)
+//!
+//! Provides M-of-N threshold signature governance for critical vault operations:
+//!   - Contract upgrade
+//!   - Fee change (performance fee, management fee)
+//!   - TVL cap change
+//!   - Admin set management (add/remove signers, set threshold)
+//!
+//! # Flow
+//! 1. Any current signer calls `propose_operation(op_type, params)` → returns `op_id`
+//! 2. Other signers call `sign_operation(op_id)` to add their signature
+//! 3. Once `signature_count >= threshold`, the operation becomes executable
+//! 4. Any signer calls `execute_operation(op_id)` to apply the change
+//! 5. Proposals expire 72 hours after creation (whether signed or not)
+
+use soroban_sdk::{contracttype, Address, BytesN, Env, Symbol, Vec};
+
 use crate::errors::VaultError;
-use crate::storage::{get_total_shares, get_balance};
+use crate::storage::{
+    get_multisig_op_count, get_multisig_signers, get_multisig_threshold, has_multisig_signed,
+    record_multisig_vote, set_multisig_op_count, set_multisig_signers, set_multisig_threshold,
+    MULTISIG_EXPIRY_SECS,
+};
 
 // ---------------------------------------------------------------------------
-// Governance constants
+// Operation type — Soroban contracttype requires simple (tuple) variants
 // ---------------------------------------------------------------------------
 
-/// Timelock duration: 48 hours in seconds (Issue #339).
-pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60;
-
-/// Quorum requirement: 10% of total shares must vote FOR (Issue #339).
-/// Expressed as basis points: 1000 = 10%.
-pub const QUORUM_BPS: u64 = 1_000;
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/// Soroban contracttype enums do not support named struct-like variants.
-/// Use a tuple variant (with a helper struct) instead.
+/// All critical operations that require multi-sig approval.
+/// Note: `#[contracttype]` only supports unit and tuple variants.
 #[contracttype]
 #[derive(Clone, Debug)]
-pub struct ParameterUpdate {
-    pub name: Symbol,
-    pub value: i128,
-}
+pub enum OpType {
+    /// Upgrade the contract Wasm. Param: new_wasm_hash.
+    Upgrade(BytesN<32>),
+    /// Change the performance fee (basis points). Param: bps.
+    SetPerfFee(u32),
+    /// Change the management fee (basis points). Param: bps.
+    SetMgmtFee(u32),
+    /// Change the TVL cap (maximum total_deposited). Param: cap.
+    SetTvlCap(i128),
+    /// Add a new signer to the multi-sig set. Param: signer address.
+    AddSigner(Address),
+    /// Remove a signer from the multi-sig set. Param: signer address.
+    RemoveSigner(Address),
+    /// Update the M-of-N signature threshold. Param: new threshold.
+    SetThreshold(u32),
 
-#[contracttype]
-#[derive(Clone, Debug)]
-pub enum ProposalType {
+    // ---------------------------------------------------------------------------
+    // Legacy governance types (kept for backward compat with existing tests)
+    // ---------------------------------------------------------------------------
     UpdateAdmin,
     UpdateUnderlyingToken,
-    UpdateParameter(ParameterUpdate),
+    UpdateParameter(Symbol, i128),
 }
+
+// ---------------------------------------------------------------------------
+// Operation status
+// ---------------------------------------------------------------------------
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
-pub enum ProposalStatus {
+pub enum OpStatus {
+    /// Created, collecting signatures.
     Pending,
-    Approved,
+    /// Threshold met — ready to execute (or already executed).
+    Ready,
+    /// Successfully executed on-chain.
     Executed,
-    Rejected,
-    Cancelled,
+    /// Expired before threshold was reached.
+    Expired,
 }
 
-/// A governance proposal.
-///
-/// `votes_for_shares` and `votes_against_shares` store the total vault-share
-/// weight of votes cast, enabling share-weighted quorum checks (Issue #339).
+// ---------------------------------------------------------------------------
+// Stored operation record
+// ---------------------------------------------------------------------------
+
 #[contracttype]
 #[derive(Clone, Debug)]
-pub struct Proposal {
+pub struct MultiSigOp {
     pub id: u64,
-    pub proposal_type: ProposalType,
+    pub op_type: OpType,
     pub proposer: Address,
-    pub status: ProposalStatus,
-    /// Raw vote count (number of signers who voted for).
-    pub votes_for: u32,
-    /// Raw vote count (number of signers who voted against).
-    pub votes_against: u32,
-    /// Share-weighted votes FOR (sum of voter share balances at vote time).
-    pub votes_for_shares: i128,
-    /// Share-weighted votes AGAINST.
-    pub votes_against_shares: i128,
-    /// Snapshot of total_shares at proposal creation time (for quorum calc).
-    pub total_shares_snapshot: i128,
-    /// Voters who have voted on this proposal.
+    pub status: OpStatus,
+    /// Number of signatures collected so far.
+    pub sig_count: u32,
+    /// Signers that have signed this operation.
     pub signers: Vec<Address>,
-    /// Ledger timestamp when this proposal was created.
-    pub created_at: u64,
-    /// Earliest ledger timestamp at which this proposal may be executed.
-    pub execution_time: u64,
+    /// Unix timestamp when proposed (ledger time).
+    pub proposed_at: u64,
+    /// Unix timestamp after which the operation expires.
+    pub expires_at: u64,
 }
 
-/// Key for recording per-signer votes; uses a tuple variant instead of named fields.
-#[contracttype]
-#[derive(Clone)]
-pub struct ProposalVoteKey {
-    pub proposal_id: u64,
-    pub signer: Address,
-}
+// ---------------------------------------------------------------------------
+// Storage key for a MultiSigOp (separate from DataKey to avoid naming conflict)
+// ---------------------------------------------------------------------------
 
 #[contracttype]
-pub enum GovDataKey {
-    Signers,
-    ProposalCount,
-    Proposal(u64),
-    /// Stores whether a given signer has voted on a given proposal.
-    ProposalVote(ProposalVoteKey),
-    Admin,
+pub enum MultisigKey {
+    Op(u64),
+}
+
+fn get_op(env: &Env, id: u64) -> Option<MultiSigOp> {
+    env.storage().instance().get(&MultisigKey::Op(id))
+}
+
+fn set_op(env: &Env, id: u64, op: &MultiSigOp) {
+    env.storage().instance().set(&MultisigKey::Op(id), op);
 }
 
 // ---------------------------------------------------------------------------
-// Storage helpers
+// Core multi-sig functions (Issue #375 API)
 // ---------------------------------------------------------------------------
 
-pub fn get_signers(env: &Env) -> Vec<Address> {
-    env.storage()
-        .instance()
-        .get(&GovDataKey::Signers)
-        .unwrap_or_else(|| Vec::new(env))
-}
-
-pub fn set_signers(env: &Env, signers: &Vec<Address>) {
-    env.storage().instance().set(&GovDataKey::Signers, signers);
-}
-
-pub fn get_proposal_count(env: &Env) -> u64 {
-    env.storage()
-        .instance()
-        .get(&GovDataKey::ProposalCount)
-        .unwrap_or(0)
-}
-
-pub fn set_proposal_count(env: &Env, count: u64) {
-    env.storage()
-        .instance()
-        .set(&GovDataKey::ProposalCount, &count);
-}
-
-pub fn get_proposal(env: &Env, id: u64) -> Option<Proposal> {
-    env.storage()
-        .instance()
-        .get(&GovDataKey::Proposal(id))
-}
-
-pub fn set_proposal(env: &Env, id: u64, proposal: &Proposal) {
-    env.storage()
-        .instance()
-        .set(&GovDataKey::Proposal(id), proposal);
-}
-
-pub fn has_voted(env: &Env, proposal_id: u64, signer: &Address) -> bool {
-    let key = GovDataKey::ProposalVote(ProposalVoteKey {
-        proposal_id,
-        signer: signer.clone(),
-    });
-    env.storage()
-        .instance()
-        .get::<GovDataKey, bool>(&key)
-        .is_some()
-}
-
-pub fn record_vote(env: &Env, proposal_id: u64, signer: &Address) {
-    let key = GovDataKey::ProposalVote(ProposalVoteKey {
-        proposal_id,
-        signer: signer.clone(),
-    });
-    env.storage().instance().set(&key, &true);
-}
-
-// ---------------------------------------------------------------------------
-// Helper: check quorum
-//
-// Quorum is met when `votes_for_shares / total_shares_snapshot >= QUORUM_BPS / 10_000`.
-// Using cross-multiplication to stay integer-only.
-// ---------------------------------------------------------------------------
-fn quorum_met(votes_for_shares: i128, total_shares_snapshot: i128) -> bool {
-    if total_shares_snapshot == 0 {
-        return false;
-    }
-    // votes_for_shares * 10_000 >= total_shares_snapshot * QUORUM_BPS
-    let lhs = votes_for_shares.checked_mul(10_000).unwrap_or(i128::MAX);
-    let rhs = total_shares_snapshot
-        .checked_mul(QUORUM_BPS as i128)
-        .unwrap_or(i128::MAX);
-    lhs >= rhs
-}
-
-// ---------------------------------------------------------------------------
-// Initialisation
-// ---------------------------------------------------------------------------
-
-pub fn initialize_governance(env: &Env, signers: Vec<Address>) -> Result<(), VaultError> {
-    let current_signers = get_signers(env);
-    if current_signers.len() > 0 {
-        return Err(VaultError::AlreadyInitialized);
-    }
-
-    set_signers(env, &signers);
-    set_proposal_count(env, 0);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// propose — create a new proposal (Issue #339)
-//
-// Any whitelisted signer may propose. The proposal captures the current
-// total_shares as a snapshot for quorum computation.
-//
-// Emits: ProposalCreated event
-// ---------------------------------------------------------------------------
-pub fn create_proposal(
+/// Start a new multi-sig proposal.
+///
+/// # Arguments
+/// - `proposer` — must be an active signer; will be auto-signed as the first sig.
+/// - `op_type`  — the operation to propose.
+///
+/// # Returns
+/// The new operation ID (1-indexed, monotonically increasing).
+///
+/// # Events
+/// Emits `OperationProposed` with topics `(op_id, proposer)`.
+pub fn propose_operation(
     env: &Env,
     proposer: Address,
-    proposal_type: ProposalType,
+    op_type: OpType,
 ) -> Result<u64, VaultError> {
     proposer.require_auth();
 
-    let signers = get_signers(env);
-    // `signers.iter()` yields owned `Address` values in soroban-sdk Vec
+    // Proposer must be a registered signer
+    let signers = get_multisig_signers(env);
     if !signers.iter().any(|s| s == proposer) {
-        return Err(VaultError::InvalidAddress);
+        return Err(VaultError::NotASigner);
     }
 
-    let count = get_proposal_count(env);
+    let count = get_multisig_op_count(env);
     let new_id = count + 1;
-    let current_time = env.ledger().timestamp();
-    let total_shares_snapshot = get_total_shares(env);
+    let now = env.ledger().timestamp();
 
-    let proposal = Proposal {
-        id: new_id,
-        proposal_type,
-        proposer: proposer.clone(),
-        status: ProposalStatus::Pending,
-        votes_for: 0,
-        votes_against: 0,
-        votes_for_shares: 0,
-        votes_against_shares: 0,
-        total_shares_snapshot,
-        signers: Vec::new(env),
-        created_at: current_time,
-        execution_time: current_time + TIMELOCK_DURATION,
+    // The proposer counts as the first signature
+    let mut initial_signers = Vec::new(env);
+    initial_signers.push_back(proposer.clone());
+
+    let threshold = get_multisig_threshold(env);
+    let status = if 1 >= threshold {
+        OpStatus::Ready
+    } else {
+        OpStatus::Pending
     };
 
-    set_proposal(env, new_id, &proposal);
-    set_proposal_count(env, new_id);
+    let op = MultiSigOp {
+        id: new_id,
+        op_type,
+        proposer: proposer.clone(),
+        status,
+        sig_count: 1,
+        signers: initial_signers,
+        proposed_at: now,
+        expires_at: now + MULTISIG_EXPIRY_SECS,
+    };
 
-    // Event: ProposalCreated (Issue #339)
+    set_op(env, new_id, &op);
+    set_multisig_op_count(env, new_id);
+
+    // Record the proposer's vote to prevent double-signing
+    record_multisig_vote(env, new_id, &proposer);
+
     env.events().publish(
-        (Symbol::new(env, "proposal_created"), proposer, new_id),
-        (current_time, current_time + TIMELOCK_DURATION, total_shares_snapshot),
+        (Symbol::new(env, "OperationProposed"), new_id, proposer),
+        (),
     );
 
     Ok(new_id)
 }
 
+/// Add a signature to an existing pending operation.
+///
+/// # Events
+/// Emits `OperationSigned` with topics `(op_id, signer, sig_count)`.
+/// If the threshold is reached, also transitions the status to `Ready`.
+pub fn sign_operation(
+    env: &Env,
+    signer: Address,
+    op_id: u64,
+) -> Result<(), VaultError> {
+    signer.require_auth();
+
+    // Must be a registered signer
+    let signers = get_multisig_signers(env);
+    if !signers.iter().any(|s| s == signer) {
+        return Err(VaultError::NotASigner);
+    }
+
+    let mut op = get_op(env, op_id).ok_or(VaultError::OperationNotFound)?;
+
+    // Check expiry
+    let now = env.ledger().timestamp();
+    if now > op.expires_at {
+        return Err(VaultError::OperationExpired);
+    }
+
+    match op.status {
+        OpStatus::Executed => return Err(VaultError::OperationAlreadyExecuted),
+        OpStatus::Expired  => return Err(VaultError::OperationExpired),
+        _ => {}
+    }
+
+    if has_multisig_signed(env, op_id, &signer) {
+        return Err(VaultError::OperationAlreadySigned);
+    }
+
+    op.sig_count += 1;
+    op.signers.push_back(signer.clone());
+    record_multisig_vote(env, op_id, &signer);
+
+    let threshold = get_multisig_threshold(env);
+    if op.sig_count >= threshold {
+        op.status = OpStatus::Ready;
+    }
+
+    let sig_count = op.sig_count;
+    set_op(env, op_id, &op);
+
+    env.events().publish(
+        (Symbol::new(env, "OperationSigned"), op_id, signer),
+        sig_count,
+    );
+
+    Ok(())
+}
+
+/// Execute a Ready operation.
+///
+/// The caller must be a signer. The operation must be in `Ready` status and
+/// not yet expired.
+///
+/// # Events
+/// Emits `OperationExecuted` with topics `(op_id, executor)`.
+///
+/// # Returns
+/// The executed `MultiSigOp` so the caller (lib.rs) can apply state changes.
+pub fn execute_multisig_op(
+    env: &Env,
+    executor: Address,
+    op_id: u64,
+) -> Result<MultiSigOp, VaultError> {
+    executor.require_auth();
+
+    // Must be a registered signer
+    let signers = get_multisig_signers(env);
+    if !signers.iter().any(|s| s == executor) {
+        return Err(VaultError::NotASigner);
+    }
+
+    let mut op = get_op(env, op_id).ok_or(VaultError::OperationNotFound)?;
+
+    let now = env.ledger().timestamp();
+    if now > op.expires_at {
+        return Err(VaultError::OperationExpired);
+    }
+
+    match op.status {
+        OpStatus::Executed => return Err(VaultError::OperationAlreadyExecuted),
+        OpStatus::Expired  => return Err(VaultError::OperationExpired),
+        OpStatus::Pending  => return Err(VaultError::ThresholdNotMet),
+        OpStatus::Ready    => {}
+    }
+
+    op.status = OpStatus::Executed;
+    set_op(env, op_id, &op);
+
+    env.events().publish(
+        (Symbol::new(env, "OperationExecuted"), op_id, executor),
+        (),
+    );
+
+    Ok(op)
+}
+
+/// Read the current status of a multi-sig operation.
+pub fn get_operation_status(env: &Env, op_id: u64) -> Option<OpStatus> {
+    get_op(env, op_id).map(|op| {
+        // Lazily reflect expiry without writing state (read-only)
+        let now = env.ledger().timestamp();
+        if matches!(op.status, OpStatus::Pending | OpStatus::Ready) && now > op.expires_at {
+            OpStatus::Expired
+        } else {
+            op.status
+        }
+    })
+}
+
+/// Return the full operation record.
+pub fn get_operation(env: &Env, op_id: u64) -> Option<MultiSigOp> {
+    get_op(env, op_id)
+}
+
 // ---------------------------------------------------------------------------
-// vote — record a share-weighted vote (Issue #339)
-//
-// Voter's share balance at vote time is used as vote weight. After every
-// vote, check if quorum (≥10%) AND majority (>50% of votes_for + votes_against
-// shares) are both met; if so, auto-transition to Approved.
-//
-// Emits: Voted event
+// Admin-set management functions
 // ---------------------------------------------------------------------------
+
+/// Add a signer directly (called after a multi-sig `AddSigner` op is executed).
+pub fn apply_add_signer(env: &Env, new_signer: &Address) -> Result<(), VaultError> {
+    let mut signers = get_multisig_signers(env);
+    // Idempotent — don't add duplicates
+    if signers.iter().any(|s| s == *new_signer) {
+        return Ok(());
+    }
+    signers.push_back(new_signer.clone());
+    set_multisig_signers(env, &signers);
+    Ok(())
+}
+
+/// Remove a signer (called after a multi-sig `RemoveSigner` op is executed).
+/// Ensures the remaining signer count is at least the threshold.
+pub fn apply_remove_signer(env: &Env, target: &Address) -> Result<(), VaultError> {
+    let signers = get_multisig_signers(env);
+    let threshold = get_multisig_threshold(env);
+    let new_len = signers.iter().filter(|s| s != target).count() as u32;
+
+    if new_len < threshold {
+        return Err(VaultError::InvalidThreshold);
+    }
+
+    let mut new_signers: Vec<Address> = Vec::new(env);
+    for s in signers.iter() {
+        if s != *target {
+            new_signers.push_back(s.clone());
+        }
+    }
+    set_multisig_signers(env, &new_signers);
+    Ok(())
+}
+
+/// Update the M threshold (called after a multi-sig `SetThreshold` op is executed).
+pub fn apply_set_threshold(env: &Env, threshold: u32) -> Result<(), VaultError> {
+    let signers = get_multisig_signers(env);
+    if threshold == 0 || threshold as usize > signers.len() as usize {
+        return Err(VaultError::InvalidThreshold);
+    }
+    set_multisig_threshold(env, threshold);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Initialization helper
+// ---------------------------------------------------------------------------
+
+/// Called once during vault `initialize` to seed the signer set and threshold.
+/// An empty signer list is valid (governance disabled until signers are added).
+pub fn initialize_governance(env: &Env, signers: Vec<Address>) -> Result<(), VaultError> {
+    // Allow re-seeding only if signers are not yet set (idempotent init path)
+    let current = get_multisig_signers(env);
+    if current.len() > 0 {
+        return Err(VaultError::AlreadyInitialized);
+    }
+
+    set_multisig_signers(env, &signers);
+    set_multisig_op_count(env, 0);
+
+    // Default threshold is 2; clamp to signer count if fewer than 2 signers provided
+    let len = signers.len() as u32;
+    let threshold = if len == 0 { 1 } else if len < 2 { len } else { 2 };
+    set_multisig_threshold(env, threshold);
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Legacy shim — keeps old `create_proposal` / `vote_on_proposal` /
+// `execute_proposal` API so existing tests compile without change.
+// ---------------------------------------------------------------------------
+
+// Re-export status enum under the old names used in lib.rs
+pub use OpStatus as ProposalStatus;
+pub use OpType as ProposalType;
+
+pub fn create_proposal(
+    env: &Env,
+    proposer: Address,
+    proposal_type: ProposalType,
+) -> Result<u64, VaultError> {
+    propose_operation(env, proposer, proposal_type)
+}
+
 pub fn vote_on_proposal(
     env: &Env,
     voter: Address,
     proposal_id: u64,
     approve: bool,
 ) -> Result<(), VaultError> {
-    voter.require_auth();
-
-    let signers = get_signers(env);
-    if !signers.iter().any(|s| s == voter) {
-        return Err(VaultError::InvalidAddress);
+    if !approve {
+        // Rejections are a no-op in the new model (we just don't sign)
+        return Ok(());
     }
-
-    let mut proposal = get_proposal(env, proposal_id)
-        .ok_or(VaultError::NotInitialized)?;
-
-    if has_voted(env, proposal_id, &voter) {
-        return Err(VaultError::InvalidAddress); // Already voted
-    }
-
-    // Can only vote on pending proposals; cancelled/executed proposals cannot
-    // receive new votes.
-    if !matches!(proposal.status, ProposalStatus::Pending) {
-        return Err(VaultError::NotApproved);
-    }
-
-    // Share-weighted vote: use the voter's current share balance.
-    let voter_shares = get_balance(env, &voter);
-
-    if approve {
-        proposal.votes_for += 1;
-        proposal.votes_for_shares = proposal.votes_for_shares
-            .checked_add(voter_shares)
-            .unwrap_or(i128::MAX);
-    } else {
-        proposal.votes_against += 1;
-        proposal.votes_against_shares = proposal.votes_against_shares
-            .checked_add(voter_shares)
-            .unwrap_or(i128::MAX);
-    }
-
-    let mut signers_vec = proposal.signers.clone();
-    signers_vec.push_back(voter.clone());
-    proposal.signers = signers_vec;
-
-    // Auto-approve when quorum (≥10% of total shares) AND majority (>50%) met.
-    let total_voted_shares = proposal.votes_for_shares
-        .checked_add(proposal.votes_against_shares)
-        .unwrap_or(i128::MAX);
-    let majority_met = total_voted_shares > 0
-        && proposal.votes_for_shares > proposal.votes_against_shares;
-    if quorum_met(proposal.votes_for_shares, proposal.total_shares_snapshot) && majority_met {
-        proposal.status = ProposalStatus::Approved;
-    }
-
-    set_proposal(env, proposal_id, &proposal);
-    record_vote(env, proposal_id, &voter);
-
-    // Event: Voted (Issue #339)
-    env.events().publish(
-        (Symbol::new(env, "voted"), voter, proposal_id),
-        (approve, voter_shares, proposal.votes_for_shares, proposal.votes_against_shares),
-    );
-
-    Ok(())
+    sign_operation(env, voter, proposal_id)
 }
 
-// ---------------------------------------------------------------------------
-// execute — execute an approved proposal after its 48h timelock (Issue #339)
-//
-// Only a whitelisted signer may trigger execution. Cancelled proposals
-// cannot be re-executed.
-//
-// Emits: ProposalExecuted event
-// ---------------------------------------------------------------------------
 pub fn execute_proposal(
     env: &Env,
     executor: Address,
     proposal_id: u64,
 ) -> Result<(), VaultError> {
-    executor.require_auth();
-
-    let signers = get_signers(env);
-    if !signers.iter().any(|s| s == executor) {
-        return Err(VaultError::InvalidAddress);
-    }
-
-    let mut proposal = get_proposal(env, proposal_id)
-        .ok_or(VaultError::NotInitialized)?;
-
-    // Cancelled proposals cannot be executed (Issue #339 requirement).
-    if matches!(proposal.status, ProposalStatus::Cancelled) {
-        return Err(VaultError::NotApproved);
-    }
-
-    // 48-hour timelock (Issue #339)
-    let current_time = env.ledger().timestamp();
-    if current_time < proposal.execution_time {
-        return Err(VaultError::InvalidAddress); // Timelock not expired
-    }
-
-    if !matches!(proposal.status, ProposalStatus::Approved) {
-        return Err(VaultError::InvalidAddress); // Not approved
-    }
-
-    proposal.status = ProposalStatus::Executed;
-    set_proposal(env, proposal_id, &proposal);
-
-    // Event: ProposalExecuted (Issue #339)
-    env.events().publish(
-        (Symbol::new(env, "proposal_executed"), executor, proposal_id),
-        (current_time, proposal.votes_for_shares, proposal.votes_against_shares),
-    );
-
+    execute_multisig_op(env, executor, proposal_id)?;
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// cancel_proposal — admin or proposer may cancel a pending proposal (Issue #339)
-//
-// Cancelled proposals cannot be re-executed. Only Pending proposals may be
-// cancelled; Approved/Executed/Rejected are terminal states.
-//
-// Emits: ProposalCancelled event
-// ---------------------------------------------------------------------------
-pub fn cancel_proposal(
-    env: &Env,
-    canceller: Address,
-    proposal_id: u64,
-) -> Result<(), VaultError> {
-    canceller.require_auth();
-
-    let mut proposal = get_proposal(env, proposal_id)
-        .ok_or(VaultError::NotInitialized)?;
-
-    // Only Pending proposals can be cancelled.
-    if !matches!(proposal.status, ProposalStatus::Pending) {
-        return Err(VaultError::NotApproved);
-    }
-
-    // Verify the canceller is either the proposer or a whitelisted signer.
-    let signers = get_signers(env);
-    let is_signer = signers.iter().any(|s| s == canceller);
-    if canceller != proposal.proposer && !is_signer {
-        return Err(VaultError::InvalidAddress);
-    }
-
-    proposal.status = ProposalStatus::Cancelled;
-    set_proposal(env, proposal_id, &proposal);
-
-    // Event: ProposalCancelled
-    env.events().publish(
-        (Symbol::new(env, "proposal_cancelled"), canceller, proposal_id),
-        (env.ledger().timestamp(),),
-    );
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// get_proposal_status — read-only
-// ---------------------------------------------------------------------------
 pub fn get_proposal_status(env: &Env, proposal_id: u64) -> Option<ProposalStatus> {
-    get_proposal(env, proposal_id).map(|p| p.status)
-}
-
-// ---------------------------------------------------------------------------
-// proposal_details — read-only, returns proposal info as a tuple
-// ---------------------------------------------------------------------------
-pub fn proposal_details(env: &Env, proposal_id: u64) -> Option<Proposal> {
-    get_proposal(env, proposal_id)
+    get_operation_status(env, proposal_id)
 }
