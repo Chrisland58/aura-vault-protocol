@@ -41,13 +41,11 @@ pub trait AuraVaultTrait {
     ///   tokens are deposited into and withdrawn from the vault.
     /// - `signers` — Ordered list of addresses authorised to create and vote
     ///   on governance proposals. Must be non-empty.
-    /// - `price_precision` — Multiplier for share price calculations. Pass `0`
-    ///   to use the Stellar default `10^7`. See [`AuraVault::share_price`].
     ///
     /// # Errors
     ///
     /// - [`VaultError::AlreadyInitialized`] — vault has already been initialised.
-    fn initialize(env: Env, admin: Address, underlying_token: Address, signers: Vec<Address>, price_precision: u32) -> Result<(), VaultError>;
+    fn initialize(env: Env, admin: Address, underlying_token: Address, signers: Vec<Address>) -> Result<(), VaultError>;
 
     /// Deposit underlying tokens and receive proportional vault shares.
     ///
@@ -311,6 +309,64 @@ pub trait AuraVaultTrait {
     /// Return the timestamp of the last successful harvest.
     fn last_harvest_time(env: Env) -> u64;
 
+    // -----------------------------------------------------------------------
+    // Circuit breaker — share-price movement limit (Issue #371)
+    // -----------------------------------------------------------------------
+
+    /// Set the maximum allowed share-price movement per harvest, in basis points.
+    ///
+    /// Admin-only. `0` disables the check. When a harvest would move the share
+    /// price by more than `bps` basis points (up **or** down), the vault
+    /// auto-pauses and emits a `suspicious` / `price_movement` event.
+    /// The admin must call [`unpause`] after reviewing.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    ///
+    /// [`unpause`]: AuraVaultTrait::unpause
+    fn set_price_movement_limit(env: Env, admin: Address, bps: u32) -> Result<(), VaultError>;
+
+    /// Read the current share-price movement limit in basis points.
+    ///
+    /// Returns `0` when the circuit breaker is disabled.
+    /// Read-only; no authorization required.
+    fn get_price_movement_limit(env: Env) -> u32;
+
+    // -----------------------------------------------------------------------
+    // Simple harvest fee (Issue #335)
+    // -----------------------------------------------------------------------
+
+    /// Set the simple harvest fee (Issue #335).
+    ///
+    /// Admin-only. Fee is immediately transferred to `fee_recipient` on every
+    /// `harvest` call. Max 1000 bps (10%). Emits `FeeUpdated` event.
+    ///
+    /// # Parameters
+    ///
+    /// - `env` — Soroban execution environment.
+    /// - `admin` — Must match stored admin address and authorise this call.
+    /// - `bps` — Fee in basis points (0–1000).
+    /// - `fee_recipient` — Address that receives the fee on each harvest.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault has not been initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    /// - [`VaultError::ZeroAmount`] — `bps` exceeds 1000.
+    fn set_fee(env: Env, admin: Address, bps: u32, fee_recipient: Address) -> Result<(), VaultError>;
+
+    /// Get the current harvest fee in basis points (Issue #335).
+    ///
+    /// Returns `0` if no fee has been configured. Read-only; no auth required.
+    fn get_fee_bps(env: Env) -> u32;
+
+    /// Get the current harvest fee recipient (Issue #335).
+    ///
+    /// Returns `None` if no recipient has been set. Read-only; no auth required.
+    fn get_fee_recipient(env: Env) -> Option<Address>;
+
     /// Returns the total underlying tokens currently tracked by the vault
     /// (`total_deposited`), in the underlying token's smallest unit.
     ///
@@ -458,39 +514,24 @@ pub trait AuraVaultTrait {
     /// - `proposal_id` — ID of the proposal to query.
     fn proposal_status(env: Env, proposal_id: u64) -> Option<String>;
 
-    // -----------------------------------------------------------------------
-    // Issue #383 — Configurable share price precision
-    // -----------------------------------------------------------------------
-
-    /// Returns the current share price scaled by `price_precision`.
+    /// Return the human-readable English message for a given [`VaultError`]
+    /// code, or `None` if the code does not correspond to a known variant.
     ///
-    /// `share_price = floor(total_deposited × price_precision / total_shares)`
+    /// This is a pure view function included in the contract ABI so that
+    /// wallet and explorer UIs can query error descriptions on-chain without
+    /// bundling a separate message table. The returned string matches the
+    /// value of [`VaultError::message`] for the corresponding variant.
     ///
-    /// Returns `0` when the vault has no outstanding shares.
-    fn share_price(env: Env) -> i128;
-
-    /// Returns the configured `price_precision` multiplier.
+    /// Read-only; no authorization required.
     ///
-    /// Defaults to `10^7` (Stellar 7-decimal standard) if the vault was
-    /// initialised with `price_precision = 0`.
-    fn get_price_precision(env: Env) -> u32;
-
-    // -----------------------------------------------------------------------
-    // Issue #380 — Storage TTL auto-bump keeper function
-    // -----------------------------------------------------------------------
-
-    /// Refresh TTLs of all critical vault storage keys (permissionless).
+    /// # Parameters
     ///
-    /// Returns the number of bump operations performed.
-    fn bump_storage(env: Env, user: Option<Address>) -> Result<u32, VaultError>;
-
-    // -----------------------------------------------------------------------
-    // Issue #381 — Contract state export for off-chain indexing
-    // -----------------------------------------------------------------------
-
-    /// Return a complete snapshot of vault state in a single call.
+    /// - `env` — Soroban execution environment.
+    /// - `code` — The numeric discriminant of a [`VaultError`] variant
+    ///   (e.g. `11` for [`VaultError::VaultPaused`]).
     ///
-    /// Useful for off-chain indexers that need to reconstruct vault state on
-    /// startup without replaying all historical events.
-    fn export_state(env: Env) -> Result<crate::storage::VaultSnapshot, VaultError>;
+    /// # Returns
+    ///
+    /// `Some(message)` for a recognised code, `None` otherwise.
+    fn get_vault_error_message(env: Env, code: u32) -> Option<String>;
 }

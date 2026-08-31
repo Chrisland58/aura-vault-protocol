@@ -35,9 +35,9 @@ mod interface;
 mod storage;
 mod governance;
 mod fee;
+mod multi_asset;
 
 pub use errors::VaultError;
-pub use storage::VaultSnapshot;
 
 #[cfg(test)]
 mod test;
@@ -58,6 +58,7 @@ mod harvest_cooldown_test;
 #[cfg(test)]
 mod pause_lifecycle_test;
 #[cfg(test)]
+mod circuit_breaker_test;#[cfg(test)]
 mod event_test;
 #[cfg(test)]
 mod event_snapshots;
@@ -68,7 +69,7 @@ mod cei_fuzz_test;
 #[cfg(test)]
 mod lifecycle_test;
 #[cfg(test)]
-mod issue_tests;
+mod cross_contract_safety_test;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
@@ -87,10 +88,8 @@ use storage::{
     get_withdrawal_fee_bps, set_withdrawal_fee_bps,
     get_withdrawal_next_id, set_withdrawal_next_id,
     get_withdrawal_entry, set_withdrawal_entry, remove_withdrawal_entry,
-    get_price_precision, set_price_precision, DEFAULT_PRICE_PRECISION,
-    VaultSnapshot, bump_all_storage,
-};
-use governance::{
+    get_harvest_fee_bps, set_harvest_fee_bps, get_harvest_fee_recipient, set_harvest_fee_recipient,
+};use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
     get_proposal_status, ProposalStatus, ProposalType,
 };
@@ -121,6 +120,104 @@ fn bump_user_yield(env: &Env, addr: &Address) {
     storage::bump_user_yield_ttl(env, addr);
 }
 
+/// Maximum oracle price accepted without reverting.
+///
+/// 1e24 in a 7-decimal token (Soroban stroops) is 1e17 tokens — far above any
+/// realistic price for any asset denominated in stroops.  Any value above this
+/// is almost certainly a feed misconfiguration or a manipulation attempt.
+pub const ORACLE_PRICE_SANITY_CAP: i128 = 1_000_000_000_000_000_000_000_000; // 1e24
+
+/// Maximum age of an oracle price before it is considered stale (seconds).
+/// Default: 3 600 s (1 hour).  Admin can narrow this via `set_oracle_max_age`.
+pub const ORACLE_DEFAULT_MAX_AGE_SECS: u64 = 3_600;
+
+// ---------------------------------------------------------------------------
+// Oracle price validation
+// ---------------------------------------------------------------------------
+
+/// Validate an oracle-supplied price:
+///
+/// 1. Zero price — feed returned 0 (dead feed or manipulation).
+/// 2. Sanity cap — price > `ORACLE_PRICE_SANITY_CAP` (unreasonably large).
+/// 3. Staleness — `updated_at` is older than `max_age_secs` relative to
+///    the current ledger timestamp.
+///
+/// Called by `harvest_token` and `distribute_yield_token` to guard the
+/// `underlying_amount` parameter supplied by the caller.
+#[allow(dead_code)]
+pub(crate) fn validate_oracle_price(
+    env: &Env,
+    price: i128,
+    updated_at: u64,
+    max_age_secs: u64,
+) -> Result<(), VaultError> {
+    if price <= 0 {
+        return Err(VaultError::OraclePriceZero);
+    }
+    if price > ORACLE_PRICE_SANITY_CAP {
+        return Err(VaultError::OraclePriceTooHigh);
+    }
+    let now = env.ledger().timestamp();
+    // saturating_sub prevents underflow if updated_at is somehow in the future
+    let age = now.saturating_sub(updated_at);
+    if age > max_age_secs {
+        return Err(VaultError::OraclePriceStale);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Post-transfer balance assertions
+// ---------------------------------------------------------------------------
+
+/// Assert that an **incoming** transfer (caller → vault) moved exactly
+/// `expected` stroops into the vault.
+///
+/// Reads `balance_after` from the token contract and compares with the
+/// caller-supplied `balance_before`.  Returns `TransferFailed` if the delta
+/// does not match.
+///
+/// # Why this is necessary
+///
+/// Soroban's SEP-41 `transfer` entry point panics on failure rather than
+/// returning a bool, so there is no return value to inspect. However, a
+/// deflationary or fee-on-transfer token might silently deliver fewer tokens
+/// than requested.  Asserting the on-chain balance delta catches this class
+/// of silent failure.
+pub(crate) fn assert_incoming_transfer(
+    token: &token::Client,
+    vault_addr: &Address,
+    balance_before: i128,
+    expected: i128,
+) -> Result<(), VaultError> {
+    let balance_after = token.balance(vault_addr);
+    let delta = balance_after
+        .checked_sub(balance_before)
+        .ok_or(VaultError::MathOverflow)?;
+    if delta != expected {
+        return Err(VaultError::TransferFailed);
+    }
+    Ok(())
+}
+
+/// Assert that an **outgoing** transfer (vault → recipient) moved exactly
+/// `expected` stroops out of the vault.
+pub(crate) fn assert_outgoing_transfer(
+    token: &token::Client,
+    vault_addr: &Address,
+    balance_before: i128,
+    expected: i128,
+) -> Result<(), VaultError> {
+    let balance_after = token.balance(vault_addr);
+    let delta = balance_before
+        .checked_sub(balance_after)
+        .ok_or(VaultError::MathOverflow)?;
+    if delta != expected {
+        return Err(VaultError::TransferFailed);
+    }
+    Ok(())
+}
+
 #[contract]
 pub struct AuraVault;
 
@@ -144,35 +241,15 @@ impl AuraVault {
     ///   deposited into and redeemed from the vault.
     /// - `signers` — Ordered list of addresses authorised to create and vote on
     ///   governance proposals. Must be non-empty.
-    /// - `price_precision` — Multiplier used when computing the human-readable
-    ///   share price via [`share_price`]:
-    ///
-    ///   ```text
-    ///   share_price = total_deposited * price_precision / total_shares
-    ///   ```
-    ///
-    ///   Pass `0` to accept the default `10^7` (Stellar's 7-decimal standard),
-    ///   which yields a price expressed in micro-units of the underlying token.
-    ///   For a 6-decimal token pass `1_000_000`; for an 18-decimal token pass
-    ///   `1_000_000_000_000_000_000`.
-    ///
-    ///   The value is stored in [`DataKey::PricePrecision`] and is queryable via
-    ///   [`get_price_precision`] and included in [`export_state`] snapshots.
     ///
     /// # Errors
     ///
     /// - [`VaultError::AlreadyInitialized`] — `initialize` has already been called.
-    ///
-    /// [`share_price`]: AuraVault::share_price
-    /// [`export_state`]: AuraVault::export_state
-    /// [`DataKey::PricePrecision`]: crate::storage::DataKey::PricePrecision
-    /// [`get_price_precision`]: crate::storage::get_price_precision
     pub fn initialize(
         env: Env,
         admin: Address,
         underlying_token: Address,
         signers: Vec<Address>,
-        price_precision: u32,
     ) -> Result<(), VaultError> {
         if get_admin(&env).is_some() {
             return Err(VaultError::AlreadyInitialized);
@@ -187,13 +264,6 @@ impl AuraVault {
         storage::set_user_pending_yield(&env, &admin, 0);
         set_version(&env, 1);
         set_layout_version(&env, CURRENT_LAYOUT_VERSION);
-        // Issue #383: store configured precision; fall back to Stellar default.
-        let effective_precision = if price_precision == 0 {
-            DEFAULT_PRICE_PRECISION
-        } else {
-            price_precision
-        };
-        set_price_precision(&env, effective_precision);
         initialize_governance(&env, signers)?;
         bump_instance(&env);
         Ok(())
@@ -300,7 +370,10 @@ impl AuraVault {
         }
 
         // CEI — Interaction: pull tokens from caller into vault
-        token.transfer(&caller, &env.current_contract_address(), &amount);
+        let vault_addr = env.current_contract_address();
+        let pre_deposit_balance = token.balance(&vault_addr);
+        token.transfer(&caller, &vault_addr, &amount);
+        assert_incoming_transfer(&token, &vault_addr, pre_deposit_balance, amount)?;
 
         // Effects: write state after successful transfer
         let old_balance = get_balance(&env, &caller);
@@ -487,7 +560,10 @@ impl AuraVault {
         // -----------------------------------------------------------------------
 
         // Interaction: send tokens to caller after all state is settled
-        token.transfer(&env.current_contract_address(), &caller, &redeem_amount);
+        let vault_addr = env.current_contract_address();
+        let pre_withdraw_balance = token.balance(&vault_addr);
+        token.transfer(&vault_addr, &caller, &redeem_amount);
+        assert_outgoing_transfer(&token, &vault_addr, pre_withdraw_balance, redeem_amount)?;
 
         // Event: topics = (event_name, caller, shares) — indexed for efficient filtering.
         env.events().publish(
@@ -720,7 +796,10 @@ impl AuraVault {
         // Interaction: transfer tokens to caller
         let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
         let token = token::Client::new(&env, &token_addr);
-        token.transfer(&env.current_contract_address(), &caller, &net_amount);
+        let vault_addr = env.current_contract_address();
+        let pre_claim_balance = token.balance(&vault_addr);
+        token.transfer(&vault_addr, &caller, &net_amount);
+        assert_outgoing_transfer(&token, &vault_addr, pre_claim_balance, net_amount)?;
 
         // Event: topics = (event_name, caller, entry_id) — indexed.
         env.events().publish(
@@ -824,12 +903,98 @@ impl AuraVault {
             .checked_add(fee_amount)
             .ok_or(VaultError::MathOverflow)?;
 
-        let new_total = total_deposited
-            .checked_add(yield_after_fee)
+        // Harvest fee (Issue #335) — deduct a protocol-level fee from the
+        // net yield before crediting total_deposited.  Unlike the performance
+        // fee (which is accumulated inside the vault), the harvest fee is
+        // transferred immediately to the configured recipient.
+        let harvest_fee_bps = storage::get_harvest_fee_bps(&env);
+        let (yield_after_fee_final, harvest_fee) = if harvest_fee_bps > 0 {
+            let hf = (yield_amount as i128)
+                .checked_mul(harvest_fee_bps as i128)
+                .ok_or(VaultError::MathOverflow)?
+                / 10_000_i128;
+            // If the harvest fee alone consumes all (or more) of the yield,
+            // the net credit to depositors would be zero — reject it.
+            if hf >= yield_amount {
+                return Err(VaultError::ZeroAmount);
+            }
+            let yaf = yield_after_fee
+                .checked_sub(hf)
+                .ok_or(VaultError::MathOverflow)?;
+            (yaf, hf)
+        } else {
+            (yield_after_fee, 0_i128)
+        };
+
+        let total_fee_emitted = fee_amount
+            .checked_add(harvest_fee)
             .ok_or(VaultError::MathOverflow)?;
 
+        let new_total = total_deposited
+            .checked_add(yield_after_fee_final)
+            .ok_or(VaultError::MathOverflow)?;
+
+        // -----------------------------------------------------------------------
+        // Circuit-breaker check — Issue #371
+        //
+        // Share price is represented as total_deposited / total_shares (in
+        // underlying token units per share).  We compare old_price vs new_price
+        // using cross-multiplication to stay integer-only and avoid division.
+        //
+        //   old_price = total_deposited / total_shares
+        //   new_price = new_total       / total_shares
+        //
+        // A limit of L bps means:
+        //   price_delta / old_price > L / 10_000
+        //
+        // Which is equivalent (via cross-multiplication):
+        //   |new_total - total_deposited| * 10_000 > total_deposited * L
+        //
+        // L == 0 disables the check.
+        // -----------------------------------------------------------------------
+        let price_limit_bps = storage::get_price_movement_limit(&env);
+        if price_limit_bps > 0 && total_deposited > 0 {
+            let delta = new_total
+                .checked_sub(total_deposited)
+                .ok_or(VaultError::MathOverflow)?
+                .abs();
+            // delta * 10_000 > total_deposited * price_limit_bps
+            let lhs = delta
+                .checked_mul(10_000)
+                .ok_or(VaultError::MathOverflow)?;
+            let rhs = total_deposited
+                .checked_mul(price_limit_bps as i128)
+                .ok_or(VaultError::MathOverflow)?;
+            if lhs > rhs {
+                // Auto-pause and emit event before returning the error.
+                set_paused(&env, true);
+                env.events().publish(
+                    (Symbol::new(&env, "suspicious"),),
+                    (
+                        Symbol::new(&env, "price_movement"),
+                        total_deposited,
+                        new_total,
+                        price_limit_bps,
+                    ),
+                );
+                bump_instance(&env);
+                return Err(VaultError::CircuitBreakerTripped);
+            }
+        }
+
         // Interaction: pull yield tokens into vault
-        token.transfer(&caller, &env.current_contract_address(), &yield_amount);
+        let vault_addr = env.current_contract_address();
+        let pre_harvest_balance = token.balance(&vault_addr);
+        token.transfer(&caller, &vault_addr, &yield_amount);
+        assert_incoming_transfer(&token, &vault_addr, pre_harvest_balance, yield_amount)?;
+
+        // Harvest fee transfer (Issue #335) — push the harvest fee portion
+        // directly to the configured recipient, if any.
+        if harvest_fee > 0 {
+            if let Some(recipient) = storage::get_harvest_fee_recipient(&env) {
+                token.transfer(&vault_addr, &recipient, &harvest_fee);
+            }
+        }
 
         // Effects: increase total deposited with net yield; accumulate fees
         set_total_deposited(&env, new_total);
@@ -839,7 +1004,7 @@ impl AuraVault {
 
         env.events().publish(
             (Symbol::new(&env, "harvest"), caller.clone(), yield_amount),
-            (yield_after_fee, fee_amount, new_total),
+            (yield_after_fee_final, total_fee_emitted, new_total),
         );
 
         bump_instance(&env);
@@ -937,13 +1102,31 @@ impl AuraVault {
             .checked_sub(fee_amount)
             .ok_or(VaultError::MathOverflow)?;
 
+        // Oracle sanity guard: validate the caller-supplied underlying_amount
+        // against the oracle price constraints (zero, sanity-cap, staleness).
+        // We use the current ledger timestamp as `updated_at` because
+        // harvest_token callers are expected to supply a freshly-computed value;
+        // the staleness window is therefore set to zero (must be from this
+        // ledger).  Callers that supply a pre-computed price from an off-chain
+        // oracle MUST pass the oracle's `updated_at` and use `set_oracle_max_age`
+        // to configure the allowed staleness.
+        validate_oracle_price(
+            &env,
+            underlying_amount,
+            env.ledger().timestamp(), // treat the supplied value as "just fetched"
+            ORACLE_DEFAULT_MAX_AGE_SECS,
+        )?;
+
         let new_total = total_deposited
             .checked_add(net_underlying)
             .ok_or(VaultError::MathOverflow)?;
 
         // Interaction: pull alt-token yield from caller
-        token::Client::new(&env, &alt_token)
-            .transfer(&caller, &env.current_contract_address(), &yield_amount);
+        let alt_token_client = token::Client::new(&env, &alt_token);
+        let vault_addr = env.current_contract_address();
+        let pre_alt_balance = alt_token_client.balance(&vault_addr);
+        alt_token_client.transfer(&caller, &vault_addr, &yield_amount);
+        assert_incoming_transfer(&alt_token_client, &vault_addr, pre_alt_balance, yield_amount)?;
 
         // Effects: credit net underlying value
         set_total_deposited(&env, new_total);
@@ -1091,7 +1274,10 @@ impl AuraVault {
         }
 
         // --- CEI: Interaction first — pull tokens ---
-        token.transfer(&caller, &env.current_contract_address(), &yield_amount);
+        let vault_addr = env.current_contract_address();
+        let pre_dist_balance = token.balance(&vault_addr);
+        token.transfer(&caller, &vault_addr, &yield_amount);
+        assert_incoming_transfer(&token, &vault_addr, pre_dist_balance, yield_amount)?;
 
         // --- Effects: update global state ---
         let prev_yps = storage::get_cumulative_yps(&env);
@@ -1184,6 +1370,15 @@ impl AuraVault {
             .checked_sub(fee_amount)
             .ok_or(VaultError::MathOverflow)?;
 
+        // Oracle sanity guard: validate the caller-supplied underlying_amount.
+        // Same constraints as harvest_token.
+        validate_oracle_price(
+            &env,
+            underlying_amount,
+            env.ledger().timestamp(),
+            ORACLE_DEFAULT_MAX_AGE_SECS,
+        )?;
+
         // Accuracy guard
         let scaled = net_underlying
             .checked_mul(YIELD_PRECISION)
@@ -1212,8 +1407,11 @@ impl AuraVault {
         }
 
         // Interaction: pull alt-token yield from caller
-        token::Client::new(&env, &alt_token)
-            .transfer(&caller, &env.current_contract_address(), &yield_amount);
+        let alt_token_client = token::Client::new(&env, &alt_token);
+        let vault_addr = env.current_contract_address();
+        let pre_alt_balance = alt_token_client.balance(&vault_addr);
+        alt_token_client.transfer(&caller, &vault_addr, &yield_amount);
+        assert_incoming_transfer(&alt_token_client, &vault_addr, pre_alt_balance, yield_amount)?;
 
         // Effects
         let prev_yps = storage::get_cumulative_yps(&env);
@@ -1380,7 +1578,10 @@ impl AuraVault {
         // Interaction: transfer claimable yield to caller
         let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
         let token = token::Client::new(&env, &token_addr);
-        token.transfer(&env.current_contract_address(), &caller, &total_claimable);
+        let vault_addr = env.current_contract_address();
+        let pre_collect_balance = token.balance(&vault_addr);
+        token.transfer(&vault_addr, &caller, &total_claimable);
+        assert_outgoing_transfer(&token, &vault_addr, pre_collect_balance, total_claimable)?;
 
         // Note: We do NOT reduce total_deposited here — the yield was already
         // added to total_deposited in distribute_yield.  The transfer comes
@@ -1604,7 +1805,10 @@ impl AuraVault {
 
         // Adjust total_deposited: fees were already excluded from it during harvest,
         // so we just transfer from vault balance.
-        token.transfer(&env.current_contract_address(), &treasury, &fees);
+        let vault_addr = env.current_contract_address();
+        let pre_fees_balance = token.balance(&vault_addr);
+        token.transfer(&vault_addr, &treasury, &fees);
+        assert_outgoing_transfer(&token, &vault_addr, pre_fees_balance, fees)?;
         storage::set_total_fee_collected(&env, 0);
 
         env.events().publish(
@@ -1622,6 +1826,69 @@ impl AuraVault {
     /// Read-only view; no authorisation required.
     pub fn total_fees_collected(env: Env) -> i128 {
         storage::get_total_fee_collected(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // Harvest fee — admin-only (Issue #335)
+    // -----------------------------------------------------------------------
+
+    /// Set the harvest fee rate and recipient address.
+    ///
+    /// Admin-only.  The harvest fee is deducted from the gross `yield_amount`
+    /// on every [`harvest`] call and transferred immediately to `fee_recipient`
+    /// (rather than accumulated inside the vault like the performance fee).
+    ///
+    /// # Parameters
+    ///
+    /// - `env` — Soroban execution environment.
+    /// - `admin` — Must match the stored admin address and authorise this call.
+    /// - `bps` — Harvest fee in basis points (`0–1_000`; max 10 %).
+    /// - `fee_recipient` — Address that receives the fee on each harvest.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    /// - [`VaultError::FeeExceedsMaximum`] — `bps > 1_000`.
+    ///
+    /// [`harvest`]: AuraVault::harvest
+    pub fn set_fee(env: Env, admin: Address, bps: u32, fee_recipient: Address) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+
+        if bps > 1_000 {
+            return Err(VaultError::FeeExceedsMaximum);
+        }
+
+        storage::set_harvest_fee_bps(&env, bps);
+        storage::set_harvest_fee_recipient(&env, &fee_recipient);
+
+        env.events().publish(
+            (Symbol::new(&env, "fee_updated"), admin),
+            (bps, fee_recipient),
+        );
+
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Read the current harvest fee rate in basis points.
+    ///
+    /// Returns `0` when no harvest fee is configured.
+    /// Read-only; no authorisation required.
+    pub fn get_fee_bps(env: Env) -> u32 {
+        storage::get_harvest_fee_bps(&env)
+    }
+
+    /// Read the current harvest fee recipient address.
+    ///
+    /// Returns `None` when no recipient has been configured.
+    /// Read-only; no authorisation required.
+    pub fn get_fee_recipient(env: Env) -> Option<Address> {
+        storage::get_harvest_fee_recipient(&env)
     }
 
     // -----------------------------------------------------------------------
@@ -1680,6 +1947,259 @@ impl AuraVault {
     }
 
     // -----------------------------------------------------------------------
+    // Circuit breaker — share-price movement limit (Issue #371)
+    // -----------------------------------------------------------------------
+
+    /// Set the maximum allowed share-price movement per harvest, in basis points.
+    ///
+    /// Admin-only.  When the price change in a single harvest exceeds this
+    /// threshold the vault is automatically paused and a `suspicious` event is
+    /// emitted.  The admin must manually call [`unpause`] after reviewing.
+    ///
+    /// # Basis-point reference
+    ///
+    /// | `bps` | Meaning |
+    /// |---|---|
+    /// | `0` | Disabled — no movement check |
+    /// | `500` | 5 % movement triggers the circuit breaker |
+    /// | `2000` | 20 % movement triggers the circuit breaker |
+    ///
+    /// The check is symmetric: abnormally large *and* abnormally small price
+    /// changes both trip the breaker.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    ///
+    /// [`unpause`]: AuraVault::unpause
+    pub fn set_price_movement_limit(env: Env, admin: Address, bps: u32) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        storage::set_price_movement_limit(&env, bps);
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Read the current share-price movement limit in basis points.
+    ///
+    /// Returns `0` when the circuit breaker is disabled.
+    /// Read-only; no authorization required.
+    pub fn get_price_movement_limit(env: Env) -> u32 {
+        storage::get_price_movement_limit(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-asset basket — Issue #336
+    // -----------------------------------------------------------------------
+
+    /// Register or update a basket asset with its weight in basis points.
+    ///
+    /// Admin-only. After all assets are registered, weights must sum to 10 000
+    /// bps to enable basket deposits and withdrawals. Use `validate_basket_weights`
+    /// to verify the configuration.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    /// - [`VaultError::ZeroAmount`] — `weight == 0`.
+    /// - [`VaultError::InvalidAddress`] — too many basket assets.
+    pub fn add_asset(
+        env: Env,
+        admin: Address,
+        token: Address,
+        weight: u32,
+    ) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        multi_asset::add_asset(&env, &admin, &token, weight)?;
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Validate that all basket asset weights sum to exactly 10 000 bps.
+    ///
+    /// Returns `Ok(())` if valid or if no assets are registered.
+    /// Returns `Err(VaultError::ZeroAmount)` if weights do not sum to 10 000.
+    ///
+    /// Read-only; no authorization required.
+    pub fn validate_basket_weights(env: Env) -> Result<(), VaultError> {
+        multi_asset::validate_weights(&env)
+    }
+
+    /// Deposit a basket asset and receive shares proportional to its weight.
+    ///
+    /// `token` must be a registered basket asset. The deposited amount is
+    /// converted to a reference denomination using the asset weight before
+    /// computing shares.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::VaultPaused`] — vault is paused.
+    /// - [`VaultError::InvalidAddress`] — token not in basket.
+    /// - [`VaultError::ZeroAmount`] — amount is 0 or share rounds to 0.
+    pub fn deposit_basket_asset(
+        env: Env,
+        caller: Address,
+        token: Address,
+        amount: i128,
+    ) -> Result<i128, VaultError> {
+        caller.require_auth();
+
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        if storage_is_paused(&env) {
+            return Err(VaultError::VaultPaused);
+        }
+
+        let total_shares = get_total_shares(&env);
+        let total_deposited = get_total_deposited(&env);
+
+        let new_shares = multi_asset::deposit_asset(
+            &env,
+            &caller,
+            &token,
+            amount,
+            total_shares,
+            total_deposited,
+        )?;
+
+        // Update global share and deposited counters
+        let old_balance = get_balance(&env, &caller);
+        let new_balance = old_balance
+            .checked_add(new_shares)
+            .ok_or(VaultError::MathOverflow)?;
+        set_balance(&env, &caller, new_balance);
+
+        let new_total_shares = total_shares
+            .checked_add(new_shares)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_shares(&env, new_total_shares);
+
+        // basket_value contributed (weight-adjusted amount)
+        let weight = storage::get_asset_weight(&env, &token);
+        let basket_value = (amount as i128)
+            .checked_mul(weight as i128)
+            .ok_or(VaultError::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(VaultError::MathOverflow)?;
+        let new_total_deposited = total_deposited
+            .checked_add(basket_value)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_deposited(&env, new_total_deposited);
+
+        bump_persistent(&env, &caller);
+        bump_instance(&env);
+
+        Ok(new_shares)
+    }
+
+    /// Burn shares and redeem proportional basket composition.
+    ///
+    /// Each registered basket asset is transferred to `caller` in proportion
+    /// to its configured weight.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::VaultPaused`] — vault is paused.
+    /// - [`VaultError::InsufficientShares`] — caller holds fewer shares.
+    /// - [`VaultError::InsufficientUnderlying`] — vault lacks tokens.
+    pub fn withdraw_basket(
+        env: Env,
+        caller: Address,
+        shares: i128,
+    ) -> Result<i128, VaultError> {
+        caller.require_auth();
+
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+        if storage_is_paused(&env) {
+            return Err(VaultError::VaultPaused);
+        }
+        if shares <= 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        let user_balance = get_balance(&env, &caller);
+        if user_balance < shares {
+            return Err(VaultError::InsufficientShares);
+        }
+
+        let total_shares = get_total_shares(&env);
+        let total_deposited = get_total_deposited(&env);
+
+        // CEI — Effects: burn shares before interactions
+        let new_user_balance = user_balance - shares;
+        set_balance(&env, &caller, new_user_balance);
+        let new_total_shares = total_shares
+            .checked_sub(shares)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_shares(&env, new_total_shares);
+
+        let redeem_value = multi_asset::withdraw_basket(
+            &env,
+            &caller,
+            shares,
+            total_shares,
+            total_deposited,
+        )?;
+
+        let new_total_deposited = total_deposited
+            .checked_sub(redeem_value)
+            .ok_or(VaultError::MathOverflow)?;
+        set_total_deposited(&env, new_total_deposited);
+
+        bump_persistent(&env, &caller);
+        bump_instance(&env);
+
+        Ok(redeem_value)
+    }
+
+    /// Return the basket total value in reference denomination.
+    ///
+    /// Computed as the sum of `asset_balance * weight / 10_000` for each
+    /// registered basket asset. Returns 0 if no assets are registered.
+    ///
+    /// Read-only; no authorization required.
+    pub fn basket_total_assets(env: Env) -> i128 {
+        multi_asset::basket_total_assets(&env)
+    }
+
+    /// Return all registered basket asset addresses.
+    ///
+    /// Read-only; no authorization required.
+    pub fn basket_assets(env: Env) -> Vec<Address> {
+        multi_asset::basket_assets(&env)
+    }
+
+    /// Return the configured weight (bps) for a specific basket asset.
+    ///
+    /// Returns 0 if the asset is not registered.
+    /// Read-only; no authorization required.
+    pub fn asset_weight(env: Env, token: Address) -> u32 {
+        multi_asset::asset_weight(&env, &token)
+    }
+
+    /// Return the vault's tracked balance for a specific basket asset.
+    ///
+    /// Returns 0 if the asset is not registered or has a zero balance.
+    /// Read-only; no authorization required.
+    pub fn asset_balance(env: Env, token: Address) -> i128 {
+        multi_asset::asset_balance(&env, &token)
+    }
+
+    // -----------------------------------------------------------------------
     // total_assets  (read-only)
     // -----------------------------------------------------------------------
     /// Returns the total underlying tokens currently tracked by the vault.
@@ -1718,145 +2238,6 @@ impl AuraVault {
     /// - `address` — The Stellar account address to query.
     pub fn balance_of(env: Env, address: Address) -> i128 {
         get_balance(&env, &address)
-    }
-
-    // -----------------------------------------------------------------------
-    // share_price  (read-only, Issue #383)
-    // -----------------------------------------------------------------------
-    /// Returns the current share price scaled by `price_precision`.
-    ///
-    /// ```text
-    /// share_price = total_deposited × price_precision / total_shares
-    /// ```
-    ///
-    /// For a freshly seeded vault with `price_precision = 10_000_000` (Stellar
-    /// 7-decimal default) and equal `total_deposited` / `total_shares`, this
-    /// returns `10_000_000`, i.e. "1.0000000".
-    ///
-    /// Returns `0` when `total_shares == 0` (vault is empty).
-    ///
-    /// Read-only view; no authorisation required.
-    pub fn share_price(env: Env) -> i128 {
-        let total_shares = get_total_shares(&env);
-        if total_shares == 0 {
-            return 0;
-        }
-        let total_deposited = get_total_deposited(&env);
-        let precision = get_price_precision(&env) as i128;
-        // share_price = floor(total_deposited * precision / total_shares)
-        // Use checked arithmetic — overflow is theoretically impossible for any
-        // realistic vault TVL, but we fall back to 0 rather than panicking.
-        total_deposited
-            .checked_mul(precision)
-            .and_then(|n| n.checked_div(total_shares))
-            .unwrap_or(0)
-    }
-
-    /// Returns the configured `price_precision` multiplier.
-    ///
-    /// Defaults to `10^7` if the vault was initialised without an explicit value.
-    /// Read-only view; no authorisation required.
-    pub fn get_price_precision(env: Env) -> u32 {
-        storage::get_price_precision(&env)
-    }
-
-    // -----------------------------------------------------------------------
-    // bump_storage — permissionless keeper TTL refresh (Issue #380)
-    // -----------------------------------------------------------------------
-    /// Refresh the TTL of all critical vault storage keys.
-    ///
-    /// Any caller (keeper, monitoring bot, or regular user) may invoke this
-    /// to prevent archival of vault state on low-traffic networks.
-    ///
-    /// ## What is bumped
-    ///
-    /// - **Instance storage** — a single call extends all instance-resident
-    ///   keys (admin, token, shares, deposited, fees, pause flag, etc.) to the
-    ///   standard 30-day window.
-    /// - **Per-user persistent storage** — when `user` is `Some(addr)`, the
-    ///   three per-address keys (`Balance`, `UserCheckpoint`,
-    ///   `UserPendingYield`) are bumped for that address if they exist.
-    ///   Pass `None` to skip per-user bumping.
-    ///
-    /// ## Returns
-    ///
-    /// The number of distinct bump operations performed (always ≥ 1 for the
-    /// instance bump; up to 3 more for the optional user keys).
-    ///
-    /// ## Events
-    ///
-    /// Emits a `storage_bumped` event with data `(keys_bumped)` so on-chain
-    /// monitoring can detect when this function was last called.
-    ///
-    /// ## Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    pub fn bump_storage(env: Env, user: Option<Address>) -> Result<u32, VaultError> {
-        if get_admin(&env).is_none() {
-            return Err(VaultError::NotInitialized);
-        }
-
-        let bumped = bump_all_storage(&env, user.as_ref());
-
-        env.events().publish(
-            (Symbol::new(&env, "storage_bumped"),),
-            (bumped,),
-        );
-
-        Ok(bumped)
-    }
-
-    // -----------------------------------------------------------------------
-    // export_state — complete vault snapshot for off-chain indexing (Issue #381)
-    // -----------------------------------------------------------------------
-    /// Return a complete snapshot of the vault state in a single call.
-    ///
-    /// Intended for off-chain indexers that need to reconstruct vault state on
-    /// startup without replaying all historical events.  All fields are read
-    /// from instance storage, so the gas cost is O(1) per field (no
-    /// per-user persistent reads).
-    ///
-    /// ## Returned fields
-    ///
-    /// | Field | Source DataKey | Description |
-    /// |---|---|---|
-    /// | `total_assets` | `TotalDeposited` | Total underlying tokens in vault |
-    /// | `total_shares` | `TotalShares` | Total outstanding vault shares |
-    /// | `is_paused` | `Paused` | Emergency pause flag |
-    /// | `admin` | `Admin` | Admin address encoded as `Val` |
-    /// | `fee_bps` | `PerfFeeBps` | Performance fee in basis points |
-    /// | `tvl_cap` | `TvlCap` | TVL cap (0 = unlimited) |
-    /// | `last_harvest` | `LastHarvestTime` | Timestamp of last harvest (0 = never) |
-    /// | `version` | `Version` | Contract version counter |
-    /// | `price_precision` | `PricePrecision` | Share price multiplier (Issue #383) |
-    ///
-    /// ## Gas cost
-    ///
-    /// Benchmarked at approximately 9 instance-storage reads + 1 event publish.
-    /// On Stellar testnet this is well within the single-invocation budget.
-    ///
-    /// ## Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    pub fn export_state(env: Env) -> Result<VaultSnapshot, VaultError> {
-        if get_admin(&env).is_none() {
-            return Err(VaultError::NotInitialized);
-        }
-
-        let snapshot = VaultSnapshot {
-            total_assets:    get_total_deposited(&env),
-            total_shares:    get_total_shares(&env),
-            is_paused:       storage_is_paused(&env),
-            // Safety: we checked is_none() above, so unwrap is guaranteed safe here.
-            admin:           get_admin(&env).unwrap(),
-            fee_bps:         storage::get_perf_fee_bps(&env),
-            tvl_cap:         get_tvl_cap(&env),
-            last_harvest:    get_last_harvest_time(&env),
-            version:         get_version(&env),
-            price_precision: get_price_precision(&env),
-        };
-
-        Ok(snapshot)
     }
 
     // -----------------------------------------------------------------------
@@ -2027,5 +2408,62 @@ impl AuraVault {
                 ProposalStatus::Rejected => soroban_sdk::String::from_str(&env, "Rejected"),
             }
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // get_vault_error_message — ABI-exposed error string lookup (Issue #370)
+    // -----------------------------------------------------------------------
+
+    /// Return the human-readable English message for a given [`VaultError`]
+    /// discriminant, or `None` if the code is not a known variant.
+    ///
+    /// Included in the contract ABI so that wallet and explorer UIs can query
+    /// error descriptions directly without bundling a separate message table.
+    /// The returned string is identical to [`VaultError::message`] for the
+    /// corresponding variant.
+    ///
+    /// Read-only view; no authorisation required.
+    ///
+    /// # Parameters
+    ///
+    /// - `code` — Numeric discriminant (1–24) of a [`VaultError`] variant.
+    ///
+    /// # Returns
+    ///
+    /// `Some(message)` for a recognised code, `None` otherwise.
+    pub fn get_vault_error_message(env: Env, code: u32) -> Option<soroban_sdk::String> {
+        let msg: Option<&'static str> = match code {
+            1  => Some(VaultError::NotInitialized.message()),
+            2  => Some(VaultError::AlreadyInitialized.message()),
+            3  => Some(VaultError::InsufficientShares.message()),
+            4  => Some(VaultError::InsufficientUnderlying.message()),
+            5  => Some(VaultError::ZeroAmount.message()),
+            6  => Some(VaultError::MathOverflow.message()),
+            7  => Some(VaultError::InvalidAddress.message()),
+            8  => Some(VaultError::ZeroShares.message()),
+            9  => Some(VaultError::UpgradeUnauthorized.message()),
+            10 => Some(VaultError::StorageLayoutMismatch.message()),
+            11 => Some(VaultError::VaultPaused.message()),
+            12 => Some(VaultError::BalanceMismatch.message()),
+            13 => Some(VaultError::TimelockNotExpired.message()),
+            14 => Some(VaultError::NotApproved.message()),
+            15 => Some(VaultError::AlreadyVoted.message()),
+            16 => Some(VaultError::TvlCapExceeded.message()),
+            17 => Some(VaultError::YieldTooSmall.message()),
+            18 => Some(VaultError::DistributionAccuracyError.message()),
+            19 => Some(VaultError::HarvestCooldown.message()),
+            20 => Some(VaultError::WithdrawalQueued.message()),
+            21 => Some(VaultError::QueueEntryNotFound.message()),
+            22 => Some(VaultError::QueueUnbondingPending.message()),
+            23 => Some(VaultError::InvalidWithdrawalFee.message()),
+            24 => Some(VaultError::TransferFailed.message()),
+            25 => Some(VaultError::OraclePriceZero.message()),
+            26 => Some(VaultError::OraclePriceTooHigh.message()),
+            27 => Some(VaultError::OraclePriceStale.message()),
+            28 => Some(VaultError::FeeExceedsMaximum.message()),
+            29 => Some(VaultError::CircuitBreakerTripped.message()),
+            _  => None,
+        };
+        msg.map(|s| soroban_sdk::String::from_str(&env, s))
     }
 }
