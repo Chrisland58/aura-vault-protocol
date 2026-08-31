@@ -3,10 +3,6 @@ Cargo.lock
 .DS_Store
 *.wasm
 
-# Node
-node_modules/
-package-lock.json
-
 *storybook.log
 storybook-static
 

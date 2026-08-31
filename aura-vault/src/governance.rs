@@ -9,7 +9,7 @@ pub const TIMELOCK_DURATION: u64 = 24 * 60 * 60; // 24 hours in seconds
 pub enum ProposalType {
     UpdateAdmin,
     UpdateUnderlyingToken,
-    UpdateParameter(Symbol, i128),
+    UpdateParameter { name: Symbol, value: i128 },
 }
 
 #[contracttype]
@@ -40,7 +40,7 @@ pub enum GovDataKey {
     Signers,
     ProposalCount,
     Proposal(u64),
-    ProposalVote(u64, Address),
+    ProposalVote { proposal_id: u64, signer: Address },
     Admin,
 }
 
@@ -83,13 +83,19 @@ pub fn set_proposal(env: &Env, id: u64, proposal: &Proposal) {
 pub fn has_voted(env: &Env, proposal_id: u64, signer: &Address) -> bool {
     env.storage()
         .instance()
-        .get::<GovDataKey, bool>(&GovDataKey::ProposalVote(proposal_id, signer.clone()))
+        .get(&GovDataKey::ProposalVote {
+            proposal_id,
+            signer: signer.clone(),
+        })
         .is_some()
 }
 
 pub fn record_vote(env: &Env, proposal_id: u64, signer: &Address) {
     env.storage().instance().set(
-        &GovDataKey::ProposalVote(proposal_id, signer.clone()),
+        &GovDataKey::ProposalVote {
+            proposal_id,
+            signer: signer.clone(),
+        },
         &true,
     );
 }
@@ -113,7 +119,7 @@ pub fn create_proposal(
     proposer.require_auth();
     
     let signers = get_signers(env);
-    if !signers.iter().any(|s| s == proposer) {
+    if !signers.iter().any(|s| s == &proposer) {
         return Err(VaultError::InvalidAddress);
     }
 
@@ -148,7 +154,7 @@ pub fn vote_on_proposal(
     voter.require_auth();
 
     let signers = get_signers(env);
-    if !signers.iter().any(|s| s == voter) {
+    if !signers.iter().any(|s| s == &voter) {
         return Err(VaultError::InvalidAddress);
     }
 
@@ -156,7 +162,7 @@ pub fn vote_on_proposal(
         .ok_or(VaultError::NotInitialized)?;
 
     if has_voted(env, proposal_id, &voter) {
-        return Err(VaultError::AlreadyVoted);
+        return Err(VaultError::InvalidAddress); // Already voted
     }
 
     if matches!(proposal.status, ProposalStatus::Pending) {
@@ -195,11 +201,11 @@ pub fn execute_proposal(
     // Verify execution time has passed
     let current_time = env.ledger().timestamp();
     if current_time < proposal.execution_time {
-        return Err(VaultError::TimelockNotExpired);
+        return Err(VaultError::InvalidAddress); // Timelock not expired
     }
 
     if !matches!(proposal.status, ProposalStatus::Approved) {
-        return Err(VaultError::NotApproved);
+        return Err(VaultError::InvalidAddress); // Not approved
     }
 
     proposal.status = ProposalStatus::Executed;
