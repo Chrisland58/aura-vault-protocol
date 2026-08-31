@@ -35,6 +35,7 @@ mod interface;
 mod storage;
 mod governance;
 mod fee;
+mod multi_asset;
 
 pub use errors::VaultError;
 
