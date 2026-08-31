@@ -4,12 +4,21 @@ use crate::errors::VaultError;
 pub const REQUIRED_SIGNATURES: u32 = 3;
 pub const TIMELOCK_DURATION: u64 = 24 * 60 * 60; // 24 hours in seconds
 
+/// Soroban contracttype enums do not support named struct-like variants.
+/// Use a tuple variant (with a helper struct) instead.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ParameterUpdate {
+    pub name: Symbol,
+    pub value: i128,
+}
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub enum ProposalType {
     UpdateAdmin,
     UpdateUnderlyingToken,
-    UpdateParameter { name: Symbol, value: i128 },
+    UpdateParameter(ParameterUpdate),
 }
 
 #[contracttype]
@@ -35,12 +44,21 @@ pub struct Proposal {
     pub execution_time: u64,
 }
 
+/// Key for recording per-signer votes; uses a tuple variant instead of named fields.
+#[contracttype]
+#[derive(Clone)]
+pub struct ProposalVoteKey {
+    pub proposal_id: u64,
+    pub signer: Address,
+}
+
 #[contracttype]
 pub enum GovDataKey {
     Signers,
     ProposalCount,
     Proposal(u64),
-    ProposalVote { proposal_id: u64, signer: Address },
+    /// Stores whether a given signer has voted on a given proposal.
+    ProposalVote(ProposalVoteKey),
     Admin,
 }
 
@@ -81,23 +99,22 @@ pub fn set_proposal(env: &Env, id: u64, proposal: &Proposal) {
 }
 
 pub fn has_voted(env: &Env, proposal_id: u64, signer: &Address) -> bool {
+    let key = GovDataKey::ProposalVote(ProposalVoteKey {
+        proposal_id,
+        signer: signer.clone(),
+    });
     env.storage()
         .instance()
-        .get(&GovDataKey::ProposalVote {
-            proposal_id,
-            signer: signer.clone(),
-        })
+        .get::<GovDataKey, bool>(&key)
         .is_some()
 }
 
 pub fn record_vote(env: &Env, proposal_id: u64, signer: &Address) {
-    env.storage().instance().set(
-        &GovDataKey::ProposalVote {
-            proposal_id,
-            signer: signer.clone(),
-        },
-        &true,
-    );
+    let key = GovDataKey::ProposalVote(ProposalVoteKey {
+        proposal_id,
+        signer: signer.clone(),
+    });
+    env.storage().instance().set(&key, &true);
 }
 
 pub fn initialize_governance(env: &Env, signers: Vec<Address>) -> Result<(), VaultError> {
@@ -119,7 +136,8 @@ pub fn create_proposal(
     proposer.require_auth();
     
     let signers = get_signers(env);
-    if !signers.iter().any(|s| s == &proposer) {
+    // `signers.iter()` yields owned `Address` values in soroban-sdk Vec
+    if !signers.iter().any(|s| s == proposer) {
         return Err(VaultError::InvalidAddress);
     }
 
@@ -154,7 +172,7 @@ pub fn vote_on_proposal(
     voter.require_auth();
 
     let signers = get_signers(env);
-    if !signers.iter().any(|s| s == &voter) {
+    if !signers.iter().any(|s| s == voter) {
         return Err(VaultError::InvalidAddress);
     }
 
