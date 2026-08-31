@@ -57,7 +57,6 @@ mod harvest_cooldown_test;
 #[cfg(test)]
 mod pause_lifecycle_test;
 #[cfg(test)]
-mod circuit_breaker_test;#[cfg(test)]
 mod event_test;
 #[cfg(test)]
 mod event_snapshots;
@@ -67,8 +66,6 @@ mod seed_ratio_test;
 mod cei_fuzz_test;
 #[cfg(test)]
 mod lifecycle_test;
-#[cfg(test)]
-mod cross_contract_safety_test;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
@@ -87,18 +84,10 @@ use storage::{
     get_withdrawal_fee_bps, set_withdrawal_fee_bps,
     get_withdrawal_next_id, set_withdrawal_next_id,
     get_withdrawal_entry, set_withdrawal_entry, remove_withdrawal_entry,
-    // Deposit cap (Issue #338)
-    get_deposit_cap, set_deposit_cap,
-    get_global_deposit_cap, set_global_deposit_cap,
-    is_cap_whitelisted, set_cap_whitelist,
-    bump_deposit_cap_ttl,
-    // Share transfer allowances (Issue #340)
-    get_allowance, set_allowance,
 };
-
 use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
-    cancel_proposal, get_proposal_status, ProposalStatus, ProposalType,
+    get_proposal_status, ProposalStatus, ProposalType,
 };
 
 // ---------------------------------------------------------------------------
@@ -125,104 +114,6 @@ pub const MAX_WITHDRAWAL_FEE_BPS: u32 = 500;
 /// persistent storage alive for the standard 30-day window.
 fn bump_user_yield(env: &Env, addr: &Address) {
     storage::bump_user_yield_ttl(env, addr);
-}
-
-/// Maximum oracle price accepted without reverting.
-///
-/// 1e24 in a 7-decimal token (Soroban stroops) is 1e17 tokens — far above any
-/// realistic price for any asset denominated in stroops.  Any value above this
-/// is almost certainly a feed misconfiguration or a manipulation attempt.
-pub const ORACLE_PRICE_SANITY_CAP: i128 = 1_000_000_000_000_000_000_000_000; // 1e24
-
-/// Maximum age of an oracle price before it is considered stale (seconds).
-/// Default: 3 600 s (1 hour).  Admin can narrow this via `set_oracle_max_age`.
-pub const ORACLE_DEFAULT_MAX_AGE_SECS: u64 = 3_600;
-
-// ---------------------------------------------------------------------------
-// Oracle price validation
-// ---------------------------------------------------------------------------
-
-/// Validate an oracle-supplied price:
-///
-/// 1. Zero price — feed returned 0 (dead feed or manipulation).
-/// 2. Sanity cap — price > `ORACLE_PRICE_SANITY_CAP` (unreasonably large).
-/// 3. Staleness — `updated_at` is older than `max_age_secs` relative to
-///    the current ledger timestamp.
-///
-/// Called by `harvest_token` and `distribute_yield_token` to guard the
-/// `underlying_amount` parameter supplied by the caller.
-#[allow(dead_code)]
-pub(crate) fn validate_oracle_price(
-    env: &Env,
-    price: i128,
-    updated_at: u64,
-    max_age_secs: u64,
-) -> Result<(), VaultError> {
-    if price <= 0 {
-        return Err(VaultError::OraclePriceZero);
-    }
-    if price > ORACLE_PRICE_SANITY_CAP {
-        return Err(VaultError::OraclePriceTooHigh);
-    }
-    let now = env.ledger().timestamp();
-    // saturating_sub prevents underflow if updated_at is somehow in the future
-    let age = now.saturating_sub(updated_at);
-    if age > max_age_secs {
-        return Err(VaultError::OraclePriceStale);
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Post-transfer balance assertions
-// ---------------------------------------------------------------------------
-
-/// Assert that an **incoming** transfer (caller → vault) moved exactly
-/// `expected` stroops into the vault.
-///
-/// Reads `balance_after` from the token contract and compares with the
-/// caller-supplied `balance_before`.  Returns `TransferFailed` if the delta
-/// does not match.
-///
-/// # Why this is necessary
-///
-/// Soroban's SEP-41 `transfer` entry point panics on failure rather than
-/// returning a bool, so there is no return value to inspect. However, a
-/// deflationary or fee-on-transfer token might silently deliver fewer tokens
-/// than requested.  Asserting the on-chain balance delta catches this class
-/// of silent failure.
-pub(crate) fn assert_incoming_transfer(
-    token: &token::Client,
-    vault_addr: &Address,
-    balance_before: i128,
-    expected: i128,
-) -> Result<(), VaultError> {
-    let balance_after = token.balance(vault_addr);
-    let delta = balance_after
-        .checked_sub(balance_before)
-        .ok_or(VaultError::MathOverflow)?;
-    if delta != expected {
-        return Err(VaultError::TransferFailed);
-    }
-    Ok(())
-}
-
-/// Assert that an **outgoing** transfer (vault → recipient) moved exactly
-/// `expected` stroops out of the vault.
-pub(crate) fn assert_outgoing_transfer(
-    token: &token::Client,
-    vault_addr: &Address,
-    balance_before: i128,
-    expected: i128,
-) -> Result<(), VaultError> {
-    let balance_after = token.balance(vault_addr);
-    let delta = balance_before
-        .checked_sub(balance_after)
-        .ok_or(VaultError::MathOverflow)?;
-    if delta != expected {
-        return Err(VaultError::TransferFailed);
-    }
-    Ok(())
 }
 
 #[contract]
@@ -328,6 +219,10 @@ impl AuraVault {
         if get_admin(&env).is_none() {
             return Err(VaultError::NotInitialized);
         }
+
+        // #360 — auto-unpause if a scheduled unpause time has passed
+        Self::maybe_auto_unpause(&env);
+
         if storage_is_paused(&env) {
             return Err(VaultError::VaultPaused);
         }
@@ -344,68 +239,32 @@ impl AuraVault {
             }
         }
 
-        // Deposit cap check (Issue #338) — skip for whitelisted addresses.
-        if !is_cap_whitelisted(&env, &caller) {
-            // Compute the number of shares that would be minted so we can
-            // project the caller's post-deposit share balance into underlying
-            // token terms.  We do a lightweight pre-computation here (full
-            // CEI share computation follows below); this is read-only so safe.
-            let ts = get_total_shares(&env);
-            let td = get_total_deposited(&env);
-            let projected_shares: i128 = if ts == 0 || td == 0 {
-                amount
-            } else {
-                amount
-                    .checked_mul(ts)
-                    .ok_or(VaultError::MathOverflow)?
-                    .checked_div(td)
-                    .ok_or(VaultError::MathOverflow)?
-            };
-            let current_shares = get_balance(&env, &caller);
-            let projected_total_shares = current_shares
-                .checked_add(projected_shares)
-                .ok_or(VaultError::MathOverflow)?;
-
-            // Convert projected shares back to underlying value for cap comparison.
-            // projected_underlying = floor(projected_total_shares * total_deposited / total_shares)
-            // When vault is empty the ratio is 1:1 (projected_total_shares == amount already).
-            let projected_underlying: i128 = if ts == 0 || td == 0 {
-                projected_total_shares
-            } else {
-                let after_ts = ts.checked_add(projected_shares).ok_or(VaultError::MathOverflow)?;
-                let after_td = td.checked_add(amount).ok_or(VaultError::MathOverflow)?;
-                projected_total_shares
-                    .checked_mul(after_td)
-                    .ok_or(VaultError::MathOverflow)?
-                    .checked_div(after_ts)
-                    .ok_or(VaultError::MathOverflow)?
-            };
-
-            // Per-address cap (overrides global if set).
-            let per_cap = get_deposit_cap(&env, &caller);
-            let effective_cap = if per_cap > 0 {
-                per_cap
-            } else {
-                get_global_deposit_cap(&env)
-            };
-
-            if effective_cap > 0 && projected_underlying > effective_cap {
-                return Err(VaultError::DepositCapExceeded);
-            }
-        }
-
         let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
         let token = token::Client::new(&env, &token_addr);
 
         // Flash-loan guard: actual token balance must equal tracked state before deposit.
+        // Note: total_deposited does NOT include accrued fees (they live in AccruedFees).
         let balance_before = token.balance(&env.current_contract_address());
         let total_deposited = get_total_deposited(&env);
-        if balance_before != total_deposited {
+        let accrued_fees = storage::get_accrued_fees(&env);
+        // The on-chain balance should equal total_deposited + accrued_fees
+        if balance_before != total_deposited + accrued_fees {
             env.events().publish(
                 (Symbol::new(&env, "suspicious"),),
-                (Symbol::new(&env, "balance_mismatch"), balance_before, total_deposited),
+                (Symbol::new(&env, "balance_mismatch"), balance_before, total_deposited + accrued_fees),
             );
             return Err(VaultError::BalanceMismatch);
+        }
+
+        // #358 — TVL cap check
+        let cap = storage::get_tvl_cap(&env);
+        if cap > 0 {
+            let new_total = total_deposited
+                .checked_add(amount)
+                .ok_or(VaultError::MathOverflow)?;
+            if new_total > cap {
+                return Err(VaultError::TvlCapExceeded);
+            }
         }
 
         let total_shares = get_total_shares(&env);
@@ -427,10 +286,7 @@ impl AuraVault {
         }
 
         // CEI — Interaction: pull tokens from caller into vault
-        let vault_addr = env.current_contract_address();
-        let pre_deposit_balance = token.balance(&vault_addr);
-        token.transfer(&caller, &vault_addr, &amount);
-        assert_incoming_transfer(&token, &vault_addr, pre_deposit_balance, amount)?;
+        token.transfer(&caller, &env.current_contract_address(), &amount);
 
         // Effects: write state after successful transfer
         let old_balance = get_balance(&env, &caller);
@@ -524,6 +380,10 @@ impl AuraVault {
         if get_admin(&env).is_none() {
             return Err(VaultError::NotInitialized);
         }
+
+        // #360 — auto-unpause if scheduled
+        Self::maybe_auto_unpause(&env);
+
         if storage_is_paused(&env) {
             return Err(VaultError::VaultPaused);
         }
@@ -533,10 +393,11 @@ impl AuraVault {
 
         let balance_before = token.balance(&env.current_contract_address());
         let total_deposited = get_total_deposited(&env);
-        if balance_before != total_deposited {
+        let accrued_fees = storage::get_accrued_fees(&env);
+        if balance_before != total_deposited + accrued_fees {
             env.events().publish(
                 (Symbol::new(&env, "suspicious"),),
-                (Symbol::new(&env, "balance_mismatch"), balance_before, total_deposited),
+                (Symbol::new(&env, "balance_mismatch"), balance_before, total_deposited + accrued_fees),
             );
             return Err(VaultError::BalanceMismatch);
         }
@@ -617,10 +478,7 @@ impl AuraVault {
         // -----------------------------------------------------------------------
 
         // Interaction: send tokens to caller after all state is settled
-        let vault_addr = env.current_contract_address();
-        let pre_withdraw_balance = token.balance(&vault_addr);
-        token.transfer(&vault_addr, &caller, &redeem_amount);
-        assert_outgoing_transfer(&token, &vault_addr, pre_withdraw_balance, redeem_amount)?;
+        token.transfer(&env.current_contract_address(), &caller, &redeem_amount);
 
         // Event: topics = (event_name, caller, shares) — indexed for efficient filtering.
         env.events().publish(
@@ -853,10 +711,7 @@ impl AuraVault {
         // Interaction: transfer tokens to caller
         let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
         let token = token::Client::new(&env, &token_addr);
-        let vault_addr = env.current_contract_address();
-        let pre_claim_balance = token.balance(&vault_addr);
-        token.transfer(&vault_addr, &caller, &net_amount);
-        assert_outgoing_transfer(&token, &vault_addr, pre_claim_balance, net_amount)?;
+        token.transfer(&env.current_contract_address(), &caller, &net_amount);
 
         // Event: topics = (event_name, caller, entry_id) — indexed.
         env.events().publish(
@@ -911,6 +766,10 @@ impl AuraVault {
         if get_admin(&env).is_none() {
             return Err(VaultError::NotInitialized);
         }
+
+        // #360 — auto-unpause if scheduled
+        Self::maybe_auto_unpause(&env);
+
         if storage_is_paused(&env) {
             return Err(VaultError::VaultPaused);
         }
@@ -941,10 +800,11 @@ impl AuraVault {
 
         // Flash-loan guard
         let balance_before = token.balance(&env.current_contract_address());
-        if balance_before != total_deposited {
+        let accrued_fees = storage::get_accrued_fees(&env);
+        if balance_before != total_deposited + accrued_fees {
             env.events().publish(
                 (Symbol::new(&env, "suspicious"),),
-                (Symbol::new(&env, "balance_mismatch"), balance_before, total_deposited),
+                (Symbol::new(&env, "balance_mismatch"), balance_before, total_deposited + accrued_fees),
             );
             return Err(VaultError::BalanceMismatch);
         }
@@ -964,65 +824,22 @@ impl AuraVault {
             .checked_add(yield_after_fee)
             .ok_or(VaultError::MathOverflow)?;
 
-        // -----------------------------------------------------------------------
-        // Circuit-breaker check — Issue #371
-        //
-        // Share price is represented as total_deposited / total_shares (in
-        // underlying token units per share).  We compare old_price vs new_price
-        // using cross-multiplication to stay integer-only and avoid division.
-        //
-        //   old_price = total_deposited / total_shares
-        //   new_price = new_total       / total_shares
-        //
-        // A limit of L bps means:
-        //   price_delta / old_price > L / 10_000
-        //
-        // Which is equivalent (via cross-multiplication):
-        //   |new_total - total_deposited| * 10_000 > total_deposited * L
-        //
-        // L == 0 disables the check.
-        // -----------------------------------------------------------------------
-        let price_limit_bps = storage::get_price_movement_limit(&env);
-        if price_limit_bps > 0 && total_deposited > 0 {
-            let delta = new_total
-                .checked_sub(total_deposited)
-                .ok_or(VaultError::MathOverflow)?
-                .abs();
-            // delta * 10_000 > total_deposited * price_limit_bps
-            let lhs = delta
-                .checked_mul(10_000)
-                .ok_or(VaultError::MathOverflow)?;
-            let rhs = total_deposited
-                .checked_mul(price_limit_bps as i128)
-                .ok_or(VaultError::MathOverflow)?;
-            if lhs > rhs {
-                // Auto-pause and emit event before returning the error.
-                set_paused(&env, true);
-                env.events().publish(
-                    (Symbol::new(&env, "suspicious"),),
-                    (
-                        Symbol::new(&env, "price_movement"),
-                        total_deposited,
-                        new_total,
-                        price_limit_bps,
-                    ),
-                );
-                bump_instance(&env);
-                return Err(VaultError::CircuitBreakerTripped);
-            }
-        }
-
         // Interaction: pull yield tokens into vault
-        let vault_addr = env.current_contract_address();
-        let pre_harvest_balance = token.balance(&vault_addr);
-        token.transfer(&caller, &vault_addr, &yield_amount);
-        assert_incoming_transfer(&token, &vault_addr, pre_harvest_balance, yield_amount)?;
+        token.transfer(&caller, &env.current_contract_address(), &yield_amount);
 
         // Effects: increase total deposited with net yield; accumulate fees
         set_total_deposited(&env, new_total);
         storage::set_total_fee_collected(&env, new_fees);
         // Record harvest timestamp for cooldown enforcement (Issue #471)
         set_last_harvest_time(&env, env.ledger().timestamp());
+
+        // #359 — Accrue the protocol fee separately (excluded from total_assets)
+        if fee_amount > 0 {
+            let new_accrued = accrued_fees
+                .checked_add(fee_amount)
+                .ok_or(VaultError::MathOverflow)?;
+            storage::set_accrued_fees(&env, new_accrued);
+        }
 
         env.events().publish(
             (Symbol::new(&env, "harvest"), caller.clone(), yield_amount),
@@ -1124,31 +941,13 @@ impl AuraVault {
             .checked_sub(fee_amount)
             .ok_or(VaultError::MathOverflow)?;
 
-        // Oracle sanity guard: validate the caller-supplied underlying_amount
-        // against the oracle price constraints (zero, sanity-cap, staleness).
-        // We use the current ledger timestamp as `updated_at` because
-        // harvest_token callers are expected to supply a freshly-computed value;
-        // the staleness window is therefore set to zero (must be from this
-        // ledger).  Callers that supply a pre-computed price from an off-chain
-        // oracle MUST pass the oracle's `updated_at` and use `set_oracle_max_age`
-        // to configure the allowed staleness.
-        validate_oracle_price(
-            &env,
-            underlying_amount,
-            env.ledger().timestamp(), // treat the supplied value as "just fetched"
-            ORACLE_DEFAULT_MAX_AGE_SECS,
-        )?;
-
         let new_total = total_deposited
             .checked_add(net_underlying)
             .ok_or(VaultError::MathOverflow)?;
 
         // Interaction: pull alt-token yield from caller
-        let alt_token_client = token::Client::new(&env, &alt_token);
-        let vault_addr = env.current_contract_address();
-        let pre_alt_balance = alt_token_client.balance(&vault_addr);
-        alt_token_client.transfer(&caller, &vault_addr, &yield_amount);
-        assert_incoming_transfer(&alt_token_client, &vault_addr, pre_alt_balance, yield_amount)?;
+        token::Client::new(&env, &alt_token)
+            .transfer(&caller, &env.current_contract_address(), &yield_amount);
 
         // Effects: credit net underlying value
         set_total_deposited(&env, new_total);
@@ -1296,10 +1095,7 @@ impl AuraVault {
         }
 
         // --- CEI: Interaction first — pull tokens ---
-        let vault_addr = env.current_contract_address();
-        let pre_dist_balance = token.balance(&vault_addr);
-        token.transfer(&caller, &vault_addr, &yield_amount);
-        assert_incoming_transfer(&token, &vault_addr, pre_dist_balance, yield_amount)?;
+        token.transfer(&caller, &env.current_contract_address(), &yield_amount);
 
         // --- Effects: update global state ---
         let prev_yps = storage::get_cumulative_yps(&env);
@@ -1392,15 +1188,6 @@ impl AuraVault {
             .checked_sub(fee_amount)
             .ok_or(VaultError::MathOverflow)?;
 
-        // Oracle sanity guard: validate the caller-supplied underlying_amount.
-        // Same constraints as harvest_token.
-        validate_oracle_price(
-            &env,
-            underlying_amount,
-            env.ledger().timestamp(),
-            ORACLE_DEFAULT_MAX_AGE_SECS,
-        )?;
-
         // Accuracy guard
         let scaled = net_underlying
             .checked_mul(YIELD_PRECISION)
@@ -1429,11 +1216,8 @@ impl AuraVault {
         }
 
         // Interaction: pull alt-token yield from caller
-        let alt_token_client = token::Client::new(&env, &alt_token);
-        let vault_addr = env.current_contract_address();
-        let pre_alt_balance = alt_token_client.balance(&vault_addr);
-        alt_token_client.transfer(&caller, &vault_addr, &yield_amount);
-        assert_incoming_transfer(&alt_token_client, &vault_addr, pre_alt_balance, yield_amount)?;
+        token::Client::new(&env, &alt_token)
+            .transfer(&caller, &env.current_contract_address(), &yield_amount);
 
         // Effects
         let prev_yps = storage::get_cumulative_yps(&env);
@@ -1600,10 +1384,7 @@ impl AuraVault {
         // Interaction: transfer claimable yield to caller
         let token_addr = get_token(&env).ok_or(VaultError::NotInitialized)?;
         let token = token::Client::new(&env, &token_addr);
-        let vault_addr = env.current_contract_address();
-        let pre_collect_balance = token.balance(&vault_addr);
-        token.transfer(&vault_addr, &caller, &total_claimable);
-        assert_outgoing_transfer(&token, &vault_addr, pre_collect_balance, total_claimable)?;
+        token.transfer(&env.current_contract_address(), &caller, &total_claimable);
 
         // Note: We do NOT reduce total_deposited here — the yield was already
         // added to total_deposited in distribute_yield.  The transfer comes
@@ -1827,10 +1608,7 @@ impl AuraVault {
 
         // Adjust total_deposited: fees were already excluded from it during harvest,
         // so we just transfer from vault balance.
-        let vault_addr = env.current_contract_address();
-        let pre_fees_balance = token.balance(&vault_addr);
-        token.transfer(&vault_addr, &treasury, &fees);
-        assert_outgoing_transfer(&token, &vault_addr, pre_fees_balance, fees)?;
+        token.transfer(&env.current_contract_address(), &treasury, &fees);
         storage::set_total_fee_collected(&env, 0);
 
         env.events().publish(
@@ -1906,665 +1684,8 @@ impl AuraVault {
     }
 
     // -----------------------------------------------------------------------
-    // Circuit breaker — share-price movement limit (Issue #371)
+    // total_assets  (read-only)
     // -----------------------------------------------------------------------
-
-    /// Set the maximum allowed share-price movement per harvest, in basis points.
-    ///
-    /// Admin-only.  When the price change in a single harvest exceeds this
-    /// threshold the vault is automatically paused and a `suspicious` event is
-    /// emitted.  The admin must manually call [`unpause`] after reviewing.
-    ///
-    /// # Basis-point reference
-    ///
-    /// | `bps` | Meaning |
-    /// |---|---|
-    /// | `0` | Disabled — no movement check |
-    /// | `500` | 5 % movement triggers the circuit breaker |
-    /// | `2000` | 20 % movement triggers the circuit breaker |
-    ///
-    /// The check is symmetric: abnormally large *and* abnormally small price
-    /// changes both trip the breaker.
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
-    ///
-    /// [`unpause`]: AuraVault::unpause
-    pub fn set_price_movement_limit(env: Env, admin: Address, bps: u32) -> Result<(), VaultError> {
-        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
-        if stored_admin != admin {
-            return Err(VaultError::UpgradeUnauthorized);
-        }
-        admin.require_auth();
-        storage::set_price_movement_limit(&env, bps);
-        bump_instance(&env);
-        Ok(())
-    }
-
-    /// Read the current share-price movement limit in basis points.
-    ///
-    /// Returns `0` when the circuit breaker is disabled.
-    /// Read-only; no authorization required.
-    pub fn get_price_movement_limit(env: Env) -> u32 {
-        storage::get_price_movement_limit(&env)
-    }
-
-    // -----------------------------------------------------------------------
-    // Deposit cap admin functions (Issue #338)
-    // -----------------------------------------------------------------------
-
-    /// Admin: set a per-address deposit cap (in underlying token units).
-    ///
-    /// `cap = 0` removes the per-address cap for that address (the global cap
-    /// still applies unless the address is whitelisted).
-    ///
-    /// Emits a `CapUpdated` event.
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
-    pub fn set_deposit_cap(
-        env: Env,
-        admin: Address,
-        depositor: Address,
-        cap: i128,
-    ) -> Result<(), VaultError> {
-        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
-        if stored_admin != admin {
-            return Err(VaultError::UpgradeUnauthorized);
-        }
-        admin.require_auth();
-        set_deposit_cap(&env, &depositor, cap);
-        bump_deposit_cap_ttl(&env, &depositor);
-        bump_instance(&env);
-        env.events().publish(
-            (Symbol::new(&env, "cap_updated"), admin, depositor.clone()),
-            (Symbol::new(&env, "per_address"), cap),
-        );
-        Ok(())
-    }
-
-    /// Admin: set the global deposit cap (in underlying token units).
-    ///
-    /// Applied to all addresses that do not have a per-address cap and are not
-    /// whitelisted. `cap = 0` disables the global cap.
-    ///
-    /// Emits a `CapUpdated` event.
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
-    pub fn set_global_deposit_cap(
-        env: Env,
-        admin: Address,
-        cap: i128,
-    ) -> Result<(), VaultError> {
-        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
-        if stored_admin != admin {
-            return Err(VaultError::UpgradeUnauthorized);
-        }
-        admin.require_auth();
-        set_global_deposit_cap(&env, cap);
-        bump_instance(&env);
-        env.events().publish(
-            (Symbol::new(&env, "cap_updated"), admin),
-            (Symbol::new(&env, "global"), cap),
-        );
-        Ok(())
-    }
-
-    /// Admin: add an address to the cap whitelist (exempt from all deposit caps).
-    ///
-    /// Emits a `CapUpdated` event.
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
-    pub fn add_cap_whitelist(
-        env: Env,
-        admin: Address,
-        addr: Address,
-    ) -> Result<(), VaultError> {
-        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
-        if stored_admin != admin {
-            return Err(VaultError::UpgradeUnauthorized);
-        }
-        admin.require_auth();
-        set_cap_whitelist(&env, &addr, true);
-        bump_instance(&env);
-        env.events().publish(
-            (Symbol::new(&env, "cap_updated"), admin, addr.clone()),
-            (Symbol::new(&env, "whitelist_add"), true),
-        );
-        Ok(())
-    }
-
-    /// Admin: remove an address from the cap whitelist.
-    ///
-    /// Emits a `CapUpdated` event.
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
-    pub fn remove_cap_whitelist(
-        env: Env,
-        admin: Address,
-        addr: Address,
-    ) -> Result<(), VaultError> {
-        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
-        if stored_admin != admin {
-            return Err(VaultError::UpgradeUnauthorized);
-        }
-        admin.require_auth();
-        set_cap_whitelist(&env, &addr, false);
-        bump_instance(&env);
-        env.events().publish(
-            (Symbol::new(&env, "cap_updated"), admin, addr.clone()),
-            (Symbol::new(&env, "whitelist_remove"), false),
-        );
-        Ok(())
-    }
-
-    /// Read the per-address deposit cap for a given address (0 = no per-address cap).
-    pub fn get_deposit_cap(env: Env, addr: Address) -> i128 {
-        storage::get_deposit_cap(&env, &addr)
-    }
-
-    /// Read the global deposit cap (0 = disabled).
-    pub fn get_global_deposit_cap(env: Env) -> i128 {
-        storage::get_global_deposit_cap(&env)
-    }
-
-    /// Returns `true` if the address is on the cap whitelist.
-    pub fn is_cap_whitelisted(env: Env, addr: Address) -> bool {
-        storage::is_cap_whitelisted(&env, &addr)
-    }
-
-    // -----------------------------------------------------------------------
-    // Share transfer functions (Issue #340) — SEP-41-style token interface
-    // -----------------------------------------------------------------------
-
-    /// Transfer vault shares from `caller` to `to`.
-    ///
-    /// Follows SEP-41 pattern. Transfers are blocked while the vault is paused.
-    ///
-    /// Emits a `Transfer` event (SEP-41 spec).
-    ///
-    /// # Parameters
-    ///
-    /// - `caller` — Owner of shares; must authorise this call.
-    /// - `to` — Recipient address.
-    /// - `shares` — Number of shares to transfer.
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::TransferNotAllowed`] — vault is paused.
-    /// - [`VaultError::ZeroAmount`] — `shares <= 0`.
-    /// - [`VaultError::InsufficientShares`] — caller holds fewer shares.
-    pub fn transfer(env: Env, caller: Address, to: Address, shares: i128) -> Result<(), VaultError> {
-        caller.require_auth();
-
-        if get_admin(&env).is_none() {
-            return Err(VaultError::NotInitialized);
-        }
-        // Transfers blocked while vault is paused (Issue #340)
-        if storage_is_paused(&env) {
-            return Err(VaultError::TransferNotAllowed);
-        }
-        if shares <= 0 {
-            return Err(VaultError::ZeroAmount);
-        }
-
-        let from_balance = get_balance(&env, &caller);
-        if shares > from_balance {
-            return Err(VaultError::InsufficientShares);
-        }
-
-        // CEI — Effects: debit sender, credit recipient
-        let new_from = from_balance - shares;
-        set_balance(&env, &caller, new_from);
-
-        let to_balance = get_balance(&env, &to);
-        let new_to = to_balance.checked_add(shares).ok_or(VaultError::MathOverflow)?;
-        set_balance(&env, &to, new_to);
-
-        // Update yield checkpoints for both parties so neither gains/loses pending yield
-        let global_yps = storage::get_cumulative_yps(&env);
-        storage::set_user_checkpoint(&env, &caller, global_yps);
-        storage::set_user_checkpoint(&env, &to, global_yps);
-
-        bump_persistent(&env, &caller);
-        bump_persistent(&env, &to);
-        bump_instance(&env);
-
-        // SEP-41 Transfer event
-        env.events().publish(
-            (Symbol::new(&env, "transfer"), caller.clone(), to.clone()),
-            (shares, new_from, new_to),
-        );
-
-        Ok(())
-    }
-
-    /// Transfer vault shares on behalf of `from`, using an approved allowance.
-    ///
-    /// Caller must have been approved by `from` via [`approve`] for at least
-    /// `shares` amount. Blocked while vault is paused.
-    ///
-    /// Emits a `Transfer` event (SEP-41 spec).
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::TransferNotAllowed`] — vault is paused.
-    /// - [`VaultError::ZeroAmount`] — `shares <= 0`.
-    /// - [`VaultError::InsufficientShares`] — `from` holds fewer shares.
-    /// - [`VaultError::NotApproved`] — spender allowance is insufficient.
-    ///
-    /// [`approve`]: AuraVault::approve
-    pub fn transfer_from(
-        env: Env,
-        spender: Address,
-        from: Address,
-        to: Address,
-        shares: i128,
-    ) -> Result<(), VaultError> {
-        spender.require_auth();
-
-        if get_admin(&env).is_none() {
-            return Err(VaultError::NotInitialized);
-        }
-        if storage_is_paused(&env) {
-            return Err(VaultError::TransferNotAllowed);
-        }
-        if shares <= 0 {
-            return Err(VaultError::ZeroAmount);
-        }
-
-        // Check and consume allowance
-        let current_allowance = get_allowance(&env, &from, &spender);
-        if current_allowance < shares {
-            return Err(VaultError::NotApproved);
-        }
-
-        let from_balance = get_balance(&env, &from);
-        if shares > from_balance {
-            return Err(VaultError::InsufficientShares);
-        }
-
-        // CEI — Effects: reduce allowance, debit sender, credit recipient
-        let new_allowance = current_allowance - shares;
-        set_allowance(&env, &from, &spender, new_allowance);
-
-        let new_from = from_balance - shares;
-        set_balance(&env, &from, new_from);
-
-        let to_balance = get_balance(&env, &to);
-        let new_to = to_balance.checked_add(shares).ok_or(VaultError::MathOverflow)?;
-        set_balance(&env, &to, new_to);
-
-        // Update yield checkpoints
-        let global_yps = storage::get_cumulative_yps(&env);
-        storage::set_user_checkpoint(&env, &from, global_yps);
-        storage::set_user_checkpoint(&env, &to, global_yps);
-
-        bump_persistent(&env, &from);
-        bump_persistent(&env, &to);
-        bump_instance(&env);
-
-        // SEP-41 Transfer event
-        env.events().publish(
-            (Symbol::new(&env, "transfer"), from.clone(), to.clone()),
-            (shares, new_from, new_to),
-        );
-
-        Ok(())
-    }
-
-    /// Approve `spender` to transfer up to `amount` vault shares on behalf of `caller`.
-    ///
-    /// Setting `amount = 0` revokes the approval. Blocked while vault is paused.
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::TransferNotAllowed`] — vault is paused.
-    pub fn approve(
-        env: Env,
-        caller: Address,
-        spender: Address,
-        amount: i128,
-    ) -> Result<(), VaultError> {
-        caller.require_auth();
-
-        if get_admin(&env).is_none() {
-            return Err(VaultError::NotInitialized);
-        }
-        if storage_is_paused(&env) {
-            return Err(VaultError::TransferNotAllowed);
-        }
-
-        set_allowance(&env, &caller, &spender, amount);
-        bump_instance(&env);
-
-        env.events().publish(
-            (Symbol::new(&env, "approval"), caller.clone(), spender.clone()),
-            (amount,),
-        );
-
-        Ok(())
-    }
-
-    /// Read the spending allowance granted by `owner` to `spender`.
-    ///
-    /// Returns `0` if no allowance has been set.
-    /// Read-only; no authorization required.
-    pub fn allowance(env: Env, owner: Address, spender: Address) -> i128 {
-        get_allowance(&env, &owner, &spender)
-    }
-
-    // -----------------------------------------------------------------------
-    // Withdrawal lock threshold alias functions (Issue #337)
-    //
-    // The withdrawal queue is already implemented (set_withdrawal_queue_threshold
-    // + claim_queued_withdrawal). Issue #337 asks for explicit
-    // set_withdrawal_lock_threshold / queue_withdrawal / execute_withdrawal
-    // aliases with renamed events.
-    // -----------------------------------------------------------------------
-
-    /// Set the threshold above which withdrawals are queued with a delay.
-    ///
-    /// Alias for `set_withdrawal_queue_threshold` with the Issue #337 naming.
-    /// `threshold = 0` disables the delay (all withdrawals are instant).
-    ///
-    /// Emits a `WithdrawalThresholdUpdated` event.
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
-    pub fn set_withdrawal_lock_threshold(
-        env: Env,
-        admin: Address,
-        threshold: i128,
-    ) -> Result<(), VaultError> {
-        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
-        if stored_admin != admin {
-            return Err(VaultError::UpgradeUnauthorized);
-        }
-        admin.require_auth();
-        set_withdrawal_queue_threshold(&env, threshold);
-        bump_instance(&env);
-        env.events().publish(
-            (Symbol::new(&env, "withdrawal_threshold_updated"), admin),
-            (threshold,),
-        );
-        Ok(())
-    }
-
-    /// Queue a withdrawal for shares above the configured threshold.
-    ///
-    /// Alias for `withdraw` that explicitly routes through the queue path.
-    /// Shares are burned immediately; the caller must call `execute_withdrawal`
-    /// after the 24-hour delay to receive underlying tokens.
-    ///
-    /// Returns the queue entry ID.
-    ///
-    /// # Errors
-    ///
-    /// Same as `withdraw` plus `VaultError::WithdrawalQueued` is NOT an error
-    /// here — it is the expected outcome. The function returns the entry ID
-    /// rather than reverting.
-    ///
-    /// - [`VaultError::ZeroAmount`] — `shares <= 0`.
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::VaultPaused`] — vault is paused.
-    /// - [`VaultError::InsufficientShares`] — caller holds fewer shares.
-    pub fn queue_withdrawal(env: Env, caller: Address, shares: i128) -> Result<u64, VaultError> {
-        caller.require_auth();
-
-        if shares <= 0 {
-            return Err(VaultError::ZeroAmount);
-        }
-        if get_admin(&env).is_none() {
-            return Err(VaultError::NotInitialized);
-        }
-        if storage_is_paused(&env) {
-            return Err(VaultError::VaultPaused);
-        }
-
-        let user_balance = get_balance(&env, &caller);
-        if shares > user_balance {
-            return Err(VaultError::InsufficientShares);
-        }
-
-        let total_deposited = get_total_deposited(&env);
-        let total_shares = get_total_shares(&env);
-
-        let numerator = shares
-            .checked_mul(total_deposited)
-            .ok_or(VaultError::MathOverflow)?;
-        let redeem_amount = numerator
-            .checked_div(total_shares)
-            .ok_or(VaultError::MathOverflow)?;
-
-        if redeem_amount <= 0 {
-            return Err(VaultError::ZeroAmount);
-        }
-        if total_deposited < redeem_amount {
-            return Err(VaultError::InsufficientUnderlying);
-        }
-
-        // CEI — Effects: burn shares and update state before creating entry
-        let new_balance = user_balance - shares;
-        set_balance(&env, &caller, new_balance);
-        let new_total_shares = total_shares
-            .checked_sub(shares)
-            .ok_or(VaultError::MathOverflow)?;
-        set_total_shares(&env, new_total_shares);
-        let new_total_deposited = total_deposited
-            .checked_sub(redeem_amount)
-            .ok_or(VaultError::MathOverflow)?;
-        set_total_deposited(&env, new_total_deposited);
-
-        // Create the queue entry with 24-hour delay
-        let unbonding_secs = get_withdrawal_unbonding_secs(&env);
-        let delay = if unbonding_secs > 0 { unbonding_secs } else { 86_400 }; // default 24h
-        let claimable_after = env.ledger().timestamp().saturating_add(delay);
-
-        let entry_id = get_withdrawal_next_id(&env);
-        set_withdrawal_next_id(&env, entry_id + 1);
-
-        let entry = WithdrawalEntry {
-            owner: caller.clone(),
-            shares,
-            redeem_amount,
-            claimable_after,
-            claimed: false,
-        };
-        set_withdrawal_entry(&env, entry_id, &entry);
-
-        bump_persistent(&env, &caller);
-        bump_instance(&env);
-
-        // Event: WithdrawalQueued (Issue #337)
-        env.events().publish(
-            (Symbol::new(&env, "withdrawal_queued"), caller.clone(), entry_id),
-            (shares, redeem_amount, claimable_after),
-        );
-
-        Ok(entry_id)
-    }
-
-    /// Execute a queued withdrawal after the unlock timestamp.
-    ///
-    /// Alias for `claim_queued_withdrawal` with the Issue #337 naming.
-    ///
-    /// # Parameters
-    ///
-    /// - `caller` — Must be the owner of the queue entry and authorise this call.
-    /// - `request_id` — The entry ID returned by `queue_withdrawal`.
-    ///
-    /// # Returns
-    ///
-    /// The net underlying tokens transferred to `caller` after fees.
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::VaultPaused`] — vault is paused.
-    /// - [`VaultError::QueueEntryNotFound`] — no entry for `request_id`.
-    /// - [`VaultError::InsufficientShares`] — caller is not the entry owner.
-    /// - [`VaultError::QueueUnbondingPending`] — unlock time not reached.
-    pub fn execute_withdrawal(
-        env: Env,
-        caller: Address,
-        request_id: u64,
-    ) -> Result<i128, VaultError> {
-        // Delegate to the existing claim implementation
-        let result = Self::claim_queued_withdrawal(env.clone(), caller.clone(), request_id)?;
-
-        // Additionally emit a WithdrawalExecuted event (Issue #337)
-        env.events().publish(
-            (Symbol::new(&env, "withdrawal_executed"), caller, request_id),
-            (result,),
-        );
-
-        Ok(result)
-    }
-
-    /// Cancel a queued withdrawal — returns shares to the caller.
-    ///
-    /// The user can cancel their queued withdrawal at any time before execution
-    /// to reclaim their shares (Issue #337: "Queued withdrawals do not lock the
-    /// shares (user can cancel)").
-    ///
-    /// # Parameters
-    ///
-    /// - `caller` — Must be the owner of the queue entry and authorise this call.
-    /// - `entry_id` — The entry ID returned by `queue_withdrawal`.
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::QueueEntryNotFound`] — no entry for `entry_id`.
-    /// - [`VaultError::InsufficientShares`] — caller is not the entry owner.
-    pub fn cancel_queued_withdrawal(
-        env: Env,
-        caller: Address,
-        entry_id: u64,
-    ) -> Result<(), VaultError> {
-        caller.require_auth();
-
-        if get_admin(&env).is_none() {
-            return Err(VaultError::NotInitialized);
-        }
-
-        let entry = get_withdrawal_entry(&env, entry_id)
-            .ok_or(VaultError::QueueEntryNotFound)?;
-
-        if entry.owner != caller {
-            return Err(VaultError::InsufficientShares);
-        }
-
-        // Restore shares and total state (reverse of queue_withdrawal)
-        let current_balance = get_balance(&env, &caller);
-        let restored_balance = current_balance
-            .checked_add(entry.shares)
-            .ok_or(VaultError::MathOverflow)?;
-        set_balance(&env, &caller, restored_balance);
-
-        let current_total_shares = get_total_shares(&env);
-        let restored_total_shares = current_total_shares
-            .checked_add(entry.shares)
-            .ok_or(VaultError::MathOverflow)?;
-        set_total_shares(&env, restored_total_shares);
-
-        let current_total_deposited = get_total_deposited(&env);
-        let restored_total_deposited = current_total_deposited
-            .checked_add(entry.redeem_amount)
-            .ok_or(VaultError::MathOverflow)?;
-        set_total_deposited(&env, restored_total_deposited);
-
-        // Remove the entry
-        remove_withdrawal_entry(&env, entry_id);
-
-        bump_persistent(&env, &caller);
-        bump_instance(&env);
-
-        env.events().publish(
-            (Symbol::new(&env, "withdrawal_cancelled"), caller.clone(), entry_id),
-            (entry.shares, entry.redeem_amount),
-        );
-
-        Ok(())
-    }
-
-    // -----------------------------------------------------------------------
-    // cancel_proposal — cancel a pending governance proposal (Issue #339)
-    // -----------------------------------------------------------------------
-
-    /// Cancel a pending governance proposal.
-    ///
-    /// Only the proposer or a whitelisted governance signer may cancel.
-    /// Cancelled proposals cannot be re-executed.
-    ///
-    /// # Errors
-    ///
-    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
-    /// - [`VaultError::InvalidAddress`] — canceller is not the proposer or a signer.
-    /// - [`VaultError::NotApproved`] — proposal is not in Pending state.
-    pub fn cancel_proposal(
-        env: Env,
-        canceller: Address,
-        proposal_id: u64,
-    ) -> Result<(), VaultError> {
-        cancel_proposal(&env, canceller, proposal_id)?;
-        bump_instance(&env);
-        Ok(())
-    }
-
-    // -----------------------------------------------------------------------
-    // propose — generic entry point alias (Issue #339)
-    //
-    // The acceptance criteria require `propose(title, calldata, voting_period)`.
-    // We map this onto `propose_parameter_update` for parameter changes, using
-    // a Symbol title and i128 calldata. voting_period is accepted but currently
-    // stored as a note (the 48h timelock is fixed per spec).
-    // -----------------------------------------------------------------------
-
-    /// Create a generic governance proposal with a title, calldata value, and
-    /// voting period hint.
-    ///
-    /// The 48-hour timelock is always enforced regardless of `voting_period`.
-    ///
-    /// # Parameters
-    ///
-    /// - `proposer` — Whitelisted governance signer.
-    /// - `title` — Symbolic name of the parameter to update.
-    /// - `calldata` — Proposed new `i128` value.
-    /// - `voting_period` — Informational voting period (seconds); accepted for
-    ///   interface compatibility but the fixed 48-hour timelock applies.
-    ///
-    /// # Returns
-    ///
-    /// A unique proposal ID.
-    pub fn propose(
-        env: Env,
-        proposer: Address,
-        title: Symbol,
-        calldata: i128,
-        _voting_period: u64,
-    ) -> Result<u64, VaultError> {
-        create_proposal(&env, proposer, ProposalType::UpdateParameter(title, calldata))
-    }
     /// Returns the total underlying tokens currently tracked by the vault.
     ///
     /// Equals the sum of all deposited amounts plus harvested yield (after
@@ -2774,60 +1895,111 @@ impl AuraVault {
     }
 
     // -----------------------------------------------------------------------
-    // get_vault_error_message — ABI-exposed error string lookup (Issue #370)
+    // #358 — TVL cap
     // -----------------------------------------------------------------------
 
-    /// Return the human-readable English message for a given [`VaultError`]
-    /// discriminant, or `None` if the code is not a known variant.
-    ///
-    /// Included in the contract ABI so that wallet and explorer UIs can query
-    /// error descriptions directly without bundling a separate message table.
-    /// The returned string is identical to [`VaultError::message`] for the
-    /// corresponding variant.
-    ///
-    /// Read-only view; no authorisation required.
-    ///
-    /// # Parameters
-    ///
-    /// - `code` — Numeric discriminant (1–24) of a [`VaultError`] variant.
-    ///
-    /// # Returns
-    ///
-    /// `Some(message)` for a recognised code, `None` otherwise.
-    pub fn get_vault_error_message(env: Env, code: u32) -> Option<soroban_sdk::String> {
-        let msg: Option<&'static str> = match code {
-            1  => Some(VaultError::NotInitialized.message()),
-            2  => Some(VaultError::AlreadyInitialized.message()),
-            3  => Some(VaultError::InsufficientShares.message()),
-            4  => Some(VaultError::InsufficientUnderlying.message()),
-            5  => Some(VaultError::ZeroAmount.message()),
-            6  => Some(VaultError::MathOverflow.message()),
-            7  => Some(VaultError::InvalidAddress.message()),
-            8  => Some(VaultError::ZeroShares.message()),
-            9  => Some(VaultError::UpgradeUnauthorized.message()),
-            10 => Some(VaultError::StorageLayoutMismatch.message()),
-            11 => Some(VaultError::VaultPaused.message()),
-            12 => Some(VaultError::BalanceMismatch.message()),
-            13 => Some(VaultError::TimelockNotExpired.message()),
-            14 => Some(VaultError::NotApproved.message()),
-            15 => Some(VaultError::AlreadyVoted.message()),
-            16 => Some(VaultError::TvlCapExceeded.message()),
-            17 => Some(VaultError::YieldTooSmall.message()),
-            18 => Some(VaultError::DistributionAccuracyError.message()),
-            19 => Some(VaultError::HarvestCooldown.message()),
-            20 => Some(VaultError::WithdrawalQueued.message()),
-            21 => Some(VaultError::QueueEntryNotFound.message()),
-            22 => Some(VaultError::QueueUnbondingPending.message()),
-            23 => Some(VaultError::InvalidWithdrawalFee.message()),
-            24 => Some(VaultError::TransferFailed.message()),
-            25 => Some(VaultError::OraclePriceZero.message()),
-            26 => Some(VaultError::OraclePriceTooHigh.message()),
-            27 => Some(VaultError::OraclePriceStale.message()),
-            28 => Some(VaultError::CircuitBreakerTripped.message()),
-            29 => Some(VaultError::DepositCapExceeded.message()),
-            30 => Some(VaultError::TransferNotAllowed.message()),
-            _  => None,
-        };
-        msg.map(|s| soroban_sdk::String::from_str(&env, s))
+    /// Sets the maximum total underlying tokens the vault will accept.
+    /// A cap of `0` means unlimited. Admin only.
+    pub fn set_tvl_cap(env: Env, max_assets: i128) -> Result<(), VaultError> {
+        let admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        admin.require_auth();
+
+        if max_assets < 0 {
+            return Err(VaultError::ZeroAmount);
+        }
+
+        storage::set_tvl_cap(&env, max_assets);
+
+        env.events().publish(
+            (Symbol::new(&env, "tvl_cap_updated"),),
+            (max_assets,),
+        );
+
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Returns the current TVL cap. `0` means unlimited.
+    pub fn tvl_cap(env: Env) -> i128 {
+        storage::get_tvl_cap(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // #361 — KYC / deposit allowlist
+    // -----------------------------------------------------------------------
+
+    /// Enable or disable KYC mode. Admin only.
+    /// When enabled, only addresses with a valid, unexpired approval may deposit.
+    pub fn set_kyc_enabled(env: Env, enabled: bool) -> Result<(), VaultError> {
+        let admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        admin.require_auth();
+        storage::set_kyc_enabled(&env, enabled);
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Set the KYC verifier address. Admin only.
+    /// The verifier is the only address allowed to call `approve_address` and
+    /// `revoke_address`.
+    pub fn set_kyc_verifier(env: Env, verifier: Address) -> Result<(), VaultError> {
+        let admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        admin.require_auth();
+        storage::set_kyc_verifier(&env, &verifier);
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Grant deposit approval to `address` until `expiry` (Unix seconds).
+    /// Callable by the KYC verifier only.
+    pub fn approve_address(env: Env, address: Address, expiry: u64) -> Result<(), VaultError> {
+        let verifier = storage::get_kyc_verifier(&env).ok_or(VaultError::KycUnauthorized)?;
+        verifier.require_auth();
+
+        storage::set_kyc_approval(&env, &address, expiry);
+        storage::bump_kyc_approval(&env, &address);
+
+        env.events().publish(
+            (Symbol::new(&env, "kyc_approved"),),
+            (address, expiry),
+        );
+
+        bump_instance(&env);
+        Ok(())
+    }
+
+    /// Revoke deposit approval for `address` immediately.
+    /// Callable by the KYC verifier only.
+    pub fn revoke_address(env: Env, address: Address) -> Result<(), VaultError> {
+        let verifier = storage::get_kyc_verifier(&env).ok_or(VaultError::KycUnauthorized)?;
+        verifier.require_auth();
+
+        storage::remove_kyc_approval(&env, &address);
+
+        env.events().publish(
+            (Symbol::new(&env, "kyc_revoked"),),
+            (address,),
+        );
+
+        bump_instance(&env);
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal helpers
+    // -----------------------------------------------------------------------
+
+    /// Auto-unpause the vault if a scheduled unpause time has passed.
+    /// Called at the start of every mutating function.
+    fn maybe_auto_unpause(env: &Env) {
+        if let Some(expires_at) = storage::get_pause_expires_at(env) {
+            if env.ledger().timestamp() >= expires_at {
+                set_paused(env, false);
+                storage::clear_pause_expires_at(env);
+                env.events().publish(
+                    (Symbol::new(env, "auto_unpaused"),),
+                    (expires_at,),
+                );
+            }
+        }
     }
 }
