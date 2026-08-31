@@ -4,7 +4,7 @@ global:
 
 rule_files:
   - "alert.rules.yml"
-  - "ssl-cert-alerts.yml"
+  - "indexer-alerts.yml"
 
 alerting:
   alertmanagers:
@@ -39,12 +39,12 @@ scrape_configs:
         labels:
           service: "node-exporter"
 
-  # Scrapes the ssl_cert_expiry_days gauge exposed by the Aura Vault backend
-  - job_name: "ssl-cert-expiry"
-    metrics_path: /metrics
-    scrape_interval: 1h
+  # Scrapes event indexer metrics from the Aura Vault backend
+  - job_name: "event-indexer"
+    metrics_path: /api/v1/indexer/metrics/prometheus
+    scrape_interval: 15s
     static_configs:
       - targets: ["host.docker.internal:3001"]
         labels:
-          service: "ssl-cert-expiry"
+          service: "event-indexer"
           environment: "production"
