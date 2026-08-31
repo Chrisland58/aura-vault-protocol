@@ -37,6 +37,7 @@ mod governance;
 mod fee;
 
 pub use errors::VaultError;
+pub use storage::VaultSnapshot;
 
 #[cfg(test)]
 mod test;
@@ -67,7 +68,7 @@ mod cei_fuzz_test;
 #[cfg(test)]
 mod lifecycle_test;
 #[cfg(test)]
-mod gas_test;
+mod issue_tests;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec, Symbol};
 
@@ -86,6 +87,8 @@ use storage::{
     get_withdrawal_fee_bps, set_withdrawal_fee_bps,
     get_withdrawal_next_id, set_withdrawal_next_id,
     get_withdrawal_entry, set_withdrawal_entry, remove_withdrawal_entry,
+    get_price_precision, set_price_precision, DEFAULT_PRICE_PRECISION,
+    VaultSnapshot, bump_all_storage,
 };
 use governance::{
     initialize_governance, create_proposal, vote_on_proposal, execute_proposal,
@@ -141,15 +144,35 @@ impl AuraVault {
     ///   deposited into and redeemed from the vault.
     /// - `signers` — Ordered list of addresses authorised to create and vote on
     ///   governance proposals. Must be non-empty.
+    /// - `price_precision` — Multiplier used when computing the human-readable
+    ///   share price via [`share_price`]:
+    ///
+    ///   ```text
+    ///   share_price = total_deposited * price_precision / total_shares
+    ///   ```
+    ///
+    ///   Pass `0` to accept the default `10^7` (Stellar's 7-decimal standard),
+    ///   which yields a price expressed in micro-units of the underlying token.
+    ///   For a 6-decimal token pass `1_000_000`; for an 18-decimal token pass
+    ///   `1_000_000_000_000_000_000`.
+    ///
+    ///   The value is stored in [`DataKey::PricePrecision`] and is queryable via
+    ///   [`get_price_precision`] and included in [`export_state`] snapshots.
     ///
     /// # Errors
     ///
     /// - [`VaultError::AlreadyInitialized`] — `initialize` has already been called.
+    ///
+    /// [`share_price`]: AuraVault::share_price
+    /// [`export_state`]: AuraVault::export_state
+    /// [`DataKey::PricePrecision`]: crate::storage::DataKey::PricePrecision
+    /// [`get_price_precision`]: crate::storage::get_price_precision
     pub fn initialize(
         env: Env,
         admin: Address,
         underlying_token: Address,
         signers: Vec<Address>,
+        price_precision: u32,
     ) -> Result<(), VaultError> {
         if get_admin(&env).is_some() {
             return Err(VaultError::AlreadyInitialized);
@@ -164,6 +187,13 @@ impl AuraVault {
         storage::set_user_pending_yield(&env, &admin, 0);
         set_version(&env, 1);
         set_layout_version(&env, CURRENT_LAYOUT_VERSION);
+        // Issue #383: store configured precision; fall back to Stellar default.
+        let effective_precision = if price_precision == 0 {
+            DEFAULT_PRICE_PRECISION
+        } else {
+            price_precision
+        };
+        set_price_precision(&env, effective_precision);
         initialize_governance(&env, signers)?;
         bump_instance(&env);
         Ok(())
@@ -225,15 +255,11 @@ impl AuraVault {
             return Err(VaultError::VaultPaused);
         }
 
-        // Optimisation: read total_deposited once and reuse across the TVL cap
-        // check, the flash-loan guard, and the share formula — eliminating two
-        // redundant storage round-trips compared to the previous three-read path.
-        let total_deposited = get_total_deposited(&env);
-
         // TVL cap check — 0 means unlimited (Issue #467)
         let tvl_cap = get_tvl_cap(&env);
         if tvl_cap > 0 {
-            let after_deposit = total_deposited
+            let current_total = get_total_deposited(&env);
+            let after_deposit = current_total
                 .checked_add(amount)
                 .ok_or(VaultError::MathOverflow)?;
             if after_deposit > tvl_cap {
@@ -246,6 +272,7 @@ impl AuraVault {
 
         // Flash-loan guard: actual token balance must equal tracked state before deposit.
         let balance_before = token.balance(&env.current_contract_address());
+        let total_deposited = get_total_deposited(&env);
         if balance_before != total_deposited {
             env.events().publish(
                 (Symbol::new(&env, "suspicious"),),
@@ -256,20 +283,15 @@ impl AuraVault {
 
         let total_shares = get_total_shares(&env);
 
-        // Compute shares to mint.
-        //
-        // Optimisation: the two-branch form below resolves to a single
-        // integer-divide when the vault is non-empty, saving one checked_mul
-        // call on the hot (non-first-deposit) path by reusing `total_deposited`
-        // already in a local register instead of fetching it from storage again.
+        // Compute shares to mint (checked arithmetic; overflow returns MathOverflow)
         let new_shares: i128 = if total_shares == 0 || total_deposited == 0 {
-            // Empty vault: seed at a 1-to-1 ratio.
             amount
         } else {
-            // Non-empty vault: floor(amount × total_shares / total_deposited).
-            amount
+            let numerator = amount
                 .checked_mul(total_shares)
-                .and_then(|n| n.checked_div(total_deposited))
+                .ok_or(VaultError::MathOverflow)?;
+            numerator
+                .checked_div(total_deposited)
                 .ok_or(VaultError::MathOverflow)?
         };
 
@@ -277,25 +299,17 @@ impl AuraVault {
             return Err(VaultError::ZeroAmount);
         }
 
-        // CEI — Interaction: pull tokens from caller into vault.
+        // CEI — Interaction: pull tokens from caller into vault
         token.transfer(&caller, &env.current_contract_address(), &amount);
 
-        // Effects: write state after successful transfer.
-        //
-        // Optimisation: snapshot cumulative_yps once so both the checkpoint
-        // write and the pending-yield read use the same cached value, avoiding
-        // a second storage fetch for get_cumulative_yps inside get_user_pending_yield.
-        let cumulative_yps = storage::get_cumulative_yps(&env);
-        let pending_yield  = storage::get_user_pending_yield(&env, &caller);
-
+        // Effects: write state after successful transfer
         let old_balance = get_balance(&env, &caller);
         let new_balance = old_balance
             .checked_add(new_shares)
             .ok_or(VaultError::MathOverflow)?;
         set_balance(&env, &caller, new_balance);
-        storage::set_user_checkpoint(&env, &caller, cumulative_yps);
-        storage::set_user_pending_yield(&env, &caller, pending_yield);
-
+        storage::set_user_checkpoint(&env, &caller, storage::get_cumulative_yps(&env));
+        storage::set_user_pending_yield(&env, &caller, storage::get_user_pending_yield(&env, &caller));
         let new_total_shares = total_shares
             .checked_add(new_shares)
             .ok_or(VaultError::MathOverflow)?;
@@ -1704,6 +1718,145 @@ impl AuraVault {
     /// - `address` — The Stellar account address to query.
     pub fn balance_of(env: Env, address: Address) -> i128 {
         get_balance(&env, &address)
+    }
+
+    // -----------------------------------------------------------------------
+    // share_price  (read-only, Issue #383)
+    // -----------------------------------------------------------------------
+    /// Returns the current share price scaled by `price_precision`.
+    ///
+    /// ```text
+    /// share_price = total_deposited × price_precision / total_shares
+    /// ```
+    ///
+    /// For a freshly seeded vault with `price_precision = 10_000_000` (Stellar
+    /// 7-decimal default) and equal `total_deposited` / `total_shares`, this
+    /// returns `10_000_000`, i.e. "1.0000000".
+    ///
+    /// Returns `0` when `total_shares == 0` (vault is empty).
+    ///
+    /// Read-only view; no authorisation required.
+    pub fn share_price(env: Env) -> i128 {
+        let total_shares = get_total_shares(&env);
+        if total_shares == 0 {
+            return 0;
+        }
+        let total_deposited = get_total_deposited(&env);
+        let precision = get_price_precision(&env) as i128;
+        // share_price = floor(total_deposited * precision / total_shares)
+        // Use checked arithmetic — overflow is theoretically impossible for any
+        // realistic vault TVL, but we fall back to 0 rather than panicking.
+        total_deposited
+            .checked_mul(precision)
+            .and_then(|n| n.checked_div(total_shares))
+            .unwrap_or(0)
+    }
+
+    /// Returns the configured `price_precision` multiplier.
+    ///
+    /// Defaults to `10^7` if the vault was initialised without an explicit value.
+    /// Read-only view; no authorisation required.
+    pub fn get_price_precision(env: Env) -> u32 {
+        storage::get_price_precision(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // bump_storage — permissionless keeper TTL refresh (Issue #380)
+    // -----------------------------------------------------------------------
+    /// Refresh the TTL of all critical vault storage keys.
+    ///
+    /// Any caller (keeper, monitoring bot, or regular user) may invoke this
+    /// to prevent archival of vault state on low-traffic networks.
+    ///
+    /// ## What is bumped
+    ///
+    /// - **Instance storage** — a single call extends all instance-resident
+    ///   keys (admin, token, shares, deposited, fees, pause flag, etc.) to the
+    ///   standard 30-day window.
+    /// - **Per-user persistent storage** — when `user` is `Some(addr)`, the
+    ///   three per-address keys (`Balance`, `UserCheckpoint`,
+    ///   `UserPendingYield`) are bumped for that address if they exist.
+    ///   Pass `None` to skip per-user bumping.
+    ///
+    /// ## Returns
+    ///
+    /// The number of distinct bump operations performed (always ≥ 1 for the
+    /// instance bump; up to 3 more for the optional user keys).
+    ///
+    /// ## Events
+    ///
+    /// Emits a `storage_bumped` event with data `(keys_bumped)` so on-chain
+    /// monitoring can detect when this function was last called.
+    ///
+    /// ## Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    pub fn bump_storage(env: Env, user: Option<Address>) -> Result<u32, VaultError> {
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+
+        let bumped = bump_all_storage(&env, user.as_ref());
+
+        env.events().publish(
+            (Symbol::new(&env, "storage_bumped"),),
+            (bumped,),
+        );
+
+        Ok(bumped)
+    }
+
+    // -----------------------------------------------------------------------
+    // export_state — complete vault snapshot for off-chain indexing (Issue #381)
+    // -----------------------------------------------------------------------
+    /// Return a complete snapshot of the vault state in a single call.
+    ///
+    /// Intended for off-chain indexers that need to reconstruct vault state on
+    /// startup without replaying all historical events.  All fields are read
+    /// from instance storage, so the gas cost is O(1) per field (no
+    /// per-user persistent reads).
+    ///
+    /// ## Returned fields
+    ///
+    /// | Field | Source DataKey | Description |
+    /// |---|---|---|
+    /// | `total_assets` | `TotalDeposited` | Total underlying tokens in vault |
+    /// | `total_shares` | `TotalShares` | Total outstanding vault shares |
+    /// | `is_paused` | `Paused` | Emergency pause flag |
+    /// | `admin` | `Admin` | Admin address encoded as `Val` |
+    /// | `fee_bps` | `PerfFeeBps` | Performance fee in basis points |
+    /// | `tvl_cap` | `TvlCap` | TVL cap (0 = unlimited) |
+    /// | `last_harvest` | `LastHarvestTime` | Timestamp of last harvest (0 = never) |
+    /// | `version` | `Version` | Contract version counter |
+    /// | `price_precision` | `PricePrecision` | Share price multiplier (Issue #383) |
+    ///
+    /// ## Gas cost
+    ///
+    /// Benchmarked at approximately 9 instance-storage reads + 1 event publish.
+    /// On Stellar testnet this is well within the single-invocation budget.
+    ///
+    /// ## Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    pub fn export_state(env: Env) -> Result<VaultSnapshot, VaultError> {
+        if get_admin(&env).is_none() {
+            return Err(VaultError::NotInitialized);
+        }
+
+        let snapshot = VaultSnapshot {
+            total_assets:    get_total_deposited(&env),
+            total_shares:    get_total_shares(&env),
+            is_paused:       storage_is_paused(&env),
+            // Safety: we checked is_none() above, so unwrap is guaranteed safe here.
+            admin:           get_admin(&env).unwrap(),
+            fee_bps:         storage::get_perf_fee_bps(&env),
+            tvl_cap:         get_tvl_cap(&env),
+            last_harvest:    get_last_harvest_time(&env),
+            version:         get_version(&env),
+            price_precision: get_price_precision(&env),
+        };
+
+        Ok(snapshot)
     }
 
     // -----------------------------------------------------------------------

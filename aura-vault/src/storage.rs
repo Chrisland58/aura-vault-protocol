@@ -18,8 +18,43 @@ pub enum DataKey {
     LastMgmtFeeTime,
     /// Whitelisted alternative yield tokens (Issue #48)
     YieldToken(Address),
-    /// Optional human-readable reason stored when pause_with_reason is called (Issue #377).
-    PauseReason,
+    /// Maximum total assets allowed (0 = unlimited). Issue #467.
+    TvlCap,
+    /// Timestamp of the last successful harvest (ledger timestamp). Issue #471.
+    LastHarvestTime,
+    /// Minimum seconds between harvests (0 = no cooldown). Issue #471.
+    HarvestCooldownSecs,
+    // -----------------------------------------------------------------------
+    // Yield-distribution per-share accumulator (Issue #YD)
+    // -----------------------------------------------------------------------
+    /// Global cumulative yield-per-share (YPS) accumulator (scaled by YIELD_PRECISION).
+    CumulativeYps,
+    /// Per-user YPS checkpoint: the value of CumulativeYps at the user's last
+    /// collect_pending_yield or deposit call.
+    UserCheckpoint(Address),
+    /// Stored (unsettled) pending yield tokens for a user, in underlying units.
+    UserPendingYield(Address),
+    /// Monotonically increasing epoch counter; bumped on every distribution.
+    DistributionEpoch,
+    // -----------------------------------------------------------------------
+    // Withdrawal queue (Issue #WQ)
+    // -----------------------------------------------------------------------
+    /// Minimum underlying-token amount that triggers queue instead of instant withdrawal.
+    WithdrawalQueueThreshold,
+    /// Minimum seconds a queued withdrawal must wait before it can be claimed.
+    WithdrawalUnbondingSecs,
+    /// Per-user withdrawal fee in basis points (0 = no fee, max 500 = 5%).
+    WithdrawalFeeBps,
+    /// Next sequential withdrawal queue ID.
+    WithdrawalNextId,
+    /// Individual withdrawal queue entry keyed by queue ID.
+    WithdrawalEntry(u64),
+    // -----------------------------------------------------------------------
+    // Share price precision (Issue #383)
+    // -----------------------------------------------------------------------
+    /// Scaling multiplier for share price calculations. Defaults to 10^7
+    /// (Stellar 7-decimal standard). Stored as u32.
+    PricePrecision,
 }
 
 pub const DAY_IN_LEDGERS: u32 = 17_280;
@@ -202,17 +237,314 @@ pub fn set_paused(env: &Env, paused: bool) {
 }
 
 // ---------------------------------------------------------------------------
-// Pause-reason helpers (instance storage — Issue #377)
+// TVL cap helpers (instance storage) — Issue #467
+// 0 means unlimited.
 // ---------------------------------------------------------------------------
 
-pub fn get_pause_reason(env: &Env) -> Option<soroban_sdk::String> {
-    env.storage().instance().get(&DataKey::PauseReason)
+pub fn get_tvl_cap(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::TvlCap).unwrap_or(0)
 }
 
-pub fn set_pause_reason(env: &Env, reason: &soroban_sdk::String) {
-    env.storage().instance().set(&DataKey::PauseReason, reason);
+pub fn set_tvl_cap(env: &Env, cap: i128) {
+    env.storage().instance().set(&DataKey::TvlCap, &cap);
 }
 
-pub fn clear_pause_reason(env: &Env) {
-    env.storage().instance().remove(&DataKey::PauseReason);
+// ---------------------------------------------------------------------------
+// Harvest cooldown helpers (instance storage) — Issue #471
+// ---------------------------------------------------------------------------
+
+/// Timestamp (ledger unix seconds) of the last successful harvest. 0 = never.
+pub fn get_last_harvest_time(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::LastHarvestTime).unwrap_or(0)
+}
+
+pub fn set_last_harvest_time(env: &Env, ts: u64) {
+    env.storage().instance().set(&DataKey::LastHarvestTime, &ts);
+}
+
+/// Minimum seconds that must elapse between harvests. 0 = no cooldown.
+pub fn get_harvest_cooldown_secs(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::HarvestCooldownSecs).unwrap_or(0)
+}
+
+pub fn set_harvest_cooldown_secs(env: &Env, secs: u64) {
+    env.storage().instance().set(&DataKey::HarvestCooldownSecs, &secs);
+}
+
+// ---------------------------------------------------------------------------
+// Yield-distribution accumulator helpers (Issue #YD)
+// ---------------------------------------------------------------------------
+
+/// Global cumulative yield-per-share (YPS), scaled by YIELD_PRECISION.
+pub fn get_cumulative_yps(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::CumulativeYps).unwrap_or(0)
+}
+
+pub fn set_cumulative_yps(env: &Env, val: i128) {
+    env.storage().instance().set(&DataKey::CumulativeYps, &val);
+}
+
+/// Per-user YPS checkpoint (persistent storage — one entry per user address).
+pub fn get_user_checkpoint(env: &Env, addr: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserCheckpoint(addr.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_user_checkpoint(env: &Env, addr: &Address, val: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserCheckpoint(addr.clone()), &val);
+}
+
+/// Per-user stored pending yield tokens, in underlying units.
+pub fn get_user_pending_yield(env: &Env, addr: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserPendingYield(addr.clone()))
+        .unwrap_or(0)
+}
+
+pub fn set_user_pending_yield(env: &Env, addr: &Address, val: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserPendingYield(addr.clone()), &val);
+}
+
+/// Global distribution epoch counter.
+pub fn get_distribution_epoch(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::DistributionEpoch).unwrap_or(0)
+}
+
+pub fn set_distribution_epoch(env: &Env, epoch: u64) {
+    env.storage().instance().set(&DataKey::DistributionEpoch, &epoch);
+}
+
+/// TTL bump for per-user yield checkpoint and pending entries.
+pub fn bump_user_yield_ttl(env: &Env, addr: &Address) {
+    // Bump both entries if they exist; silently skip if not yet set.
+    let ck = DataKey::UserCheckpoint(addr.clone());
+    if env.storage().persistent().has(&ck) {
+        env.storage().persistent().extend_ttl(&ck, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
+    let py = DataKey::UserPendingYield(addr.clone());
+    if env.storage().persistent().has(&py) {
+        env.storage().persistent().extend_ttl(&py, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Withdrawal queue helpers (Issue #WQ)
+// ---------------------------------------------------------------------------
+
+/// Minimum underlying-token amount that routes a withdrawal through the queue.
+/// 0 means all withdrawals are instant (queue disabled).
+pub fn get_withdrawal_queue_threshold(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::WithdrawalQueueThreshold).unwrap_or(0)
+}
+
+pub fn set_withdrawal_queue_threshold(env: &Env, threshold: i128) {
+    env.storage().instance().set(&DataKey::WithdrawalQueueThreshold, &threshold);
+}
+
+/// Seconds a queued withdrawal must wait before it can be claimed.
+/// Default 0 (instant once queued — admin sets unbonding period).
+pub fn get_withdrawal_unbonding_secs(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::WithdrawalUnbondingSecs).unwrap_or(0)
+}
+
+pub fn set_withdrawal_unbonding_secs(env: &Env, secs: u64) {
+    env.storage().instance().set(&DataKey::WithdrawalUnbondingSecs, &secs);
+}
+
+/// Withdrawal fee in basis points (0–500). Applied on claim.
+pub fn get_withdrawal_fee_bps(env: &Env) -> u32 {
+    env.storage().instance().get(&DataKey::WithdrawalFeeBps).unwrap_or(0)
+}
+
+pub fn set_withdrawal_fee_bps(env: &Env, bps: u32) {
+    env.storage().instance().set(&DataKey::WithdrawalFeeBps, &bps);
+}
+
+/// Monotonically-increasing withdrawal queue ID.  The next entry will use
+/// this value, then it is incremented.
+pub fn get_withdrawal_next_id(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::WithdrawalNextId).unwrap_or(1)
+}
+
+pub fn set_withdrawal_next_id(env: &Env, id: u64) {
+    env.storage().instance().set(&DataKey::WithdrawalNextId, &id);
+}
+
+/// Retrieve a withdrawal queue entry.
+pub fn get_withdrawal_entry(env: &Env, id: u64) -> Option<WithdrawalEntry> {
+    env.storage().persistent().get(&DataKey::WithdrawalEntry(id))
+}
+
+/// Store a withdrawal queue entry.
+pub fn set_withdrawal_entry(env: &Env, id: u64, entry: &WithdrawalEntry) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::WithdrawalEntry(id), entry);
+    let key = DataKey::WithdrawalEntry(id);
+    env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+}
+
+/// Remove a withdrawal queue entry (after claim).
+pub fn remove_withdrawal_entry(env: &Env, id: u64) {
+    env.storage().persistent().remove(&DataKey::WithdrawalEntry(id));
+}
+
+/// A single entry in the withdrawal queue.
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug)]
+pub struct WithdrawalEntry {
+    /// Address that queued the withdrawal.
+    pub owner: Address,
+    /// Number of vault shares burned when this entry was created.
+    pub shares: i128,
+    /// Underlying token amount to be redeemed (computed at queue time).
+    pub redeem_amount: i128,
+    /// Ledger timestamp after which the entry may be claimed.
+    pub claimable_after: u64,
+    /// Whether this entry has already been claimed.
+    pub claimed: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Share price precision helpers (Issue #383)
+//
+// `price_precision` is the multiplier used when computing the share price for
+// display / off-chain calculations:
+//
+//   share_price = total_deposited * price_precision / total_shares
+//
+// It defaults to 10^7 (Stellar's 7-decimal standard) so a freshly deployed
+// vault on Stellar produces a human-readable "1.0000000" price with no
+// extra configuration.
+//
+// The value is stored in instance storage alongside other vault parameters and
+// is read by `share_price()` and by any off-chain indexer that calls
+// `export_state()`.
+// ---------------------------------------------------------------------------
+
+/// Default precision: 10^7 — matches Stellar's 7-decimal token standard.
+pub const DEFAULT_PRICE_PRECISION: u32 = 10_000_000;
+
+/// Read the configured share price precision multiplier.
+///
+/// Returns [`DEFAULT_PRICE_PRECISION`] if the key was never written (i.e.,
+/// for vaults that were initialised before this feature was added).
+pub fn get_price_precision(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::PricePrecision)
+        .unwrap_or(DEFAULT_PRICE_PRECISION)
+}
+
+/// Persist the share price precision multiplier.
+pub fn set_price_precision(env: &Env, precision: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PricePrecision, &precision);
+}
+
+// ---------------------------------------------------------------------------
+// VaultSnapshot — complete state export for off-chain indexing (Issue #381)
+//
+// `export_state()` in lib.rs returns this struct in a single call.  Back-ends
+// can call it on startup to rebuild their local index without replaying all
+// historical events.  Every field maps directly to one or more DataKey reads
+// so the gas cost is proportional to the number of instance-storage keys
+// (~O(1) per field).
+//
+// Fields
+// ------
+// total_assets      — total underlying tokens in the vault (= total_deposited)
+// total_shares      — total outstanding vault shares
+// is_paused         — emergency-pause flag
+// admin             — admin address (None = uninitialised)
+// fee_bps           — current performance fee in basis points
+// tvl_cap           — TVL cap (0 = unlimited)
+// last_harvest      — timestamp of the last successful harvest (0 = never)
+// version           — contract version counter
+// price_precision   — share price precision multiplier (Issue #383)
+// ---------------------------------------------------------------------------
+
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug)]
+pub struct VaultSnapshot {
+    pub total_assets:     i128,
+    pub total_shares:     i128,
+    pub is_paused:        bool,
+    /// Admin address — always present when vault is initialised.
+    pub admin:            Address,
+    pub fee_bps:          u32,
+    pub tvl_cap:          i128,
+    pub last_harvest:     u64,
+    pub version:          u32,
+    pub price_precision:  u32,
+}
+
+// ---------------------------------------------------------------------------
+// bump_storage — permissionless keeper TTL refresh (Issue #380)
+//
+// Scans all critical instance-storage DataKeys and extends their TTL to
+// 30 days if they are within 7 days of expiry.  Also bumps any per-user
+// persistent keys for the optional `user` hint argument.
+//
+// Returns the number of keys that were successfully bumped.
+//
+// Instance storage uses a single underlying key in Soroban, so calling
+// `bump_instance` once is equivalent to refreshing every instance-resident
+// DataKey at once.  The persistent keys must be bumped individually because
+// each address has its own row.
+// ---------------------------------------------------------------------------
+
+/// Refresh all critical vault storage TTLs.
+///
+/// Instance storage is refreshed unconditionally (single bump covers all
+/// instance-resident keys).  If `user` is `Some(addr)`, the per-user
+/// persistent keys (`Balance`, `UserCheckpoint`, `UserPendingYield`) are also
+/// bumped for that address.
+///
+/// Returns the count of distinct bump operations performed.
+pub fn bump_all_storage(env: &Env, user: Option<&Address>) -> u32 {
+    let mut bumped: u32 = 0;
+
+    // One call covers every instance-storage key.
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    bumped += 1;
+
+    // Per-user persistent keys (Balance, UserCheckpoint, UserPendingYield).
+    if let Some(addr) = user {
+        let balance_key = DataKey::Balance(addr.clone());
+        if env.storage().persistent().has(&balance_key) {
+            env.storage().persistent().extend_ttl(
+                &balance_key,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+            bumped += 1;
+        }
+        let ck = DataKey::UserCheckpoint(addr.clone());
+        if env.storage().persistent().has(&ck) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&ck, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+            bumped += 1;
+        }
+        let py = DataKey::UserPendingYield(addr.clone());
+        if env.storage().persistent().has(&py) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&py, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+            bumped += 1;
+        }
+    }
+
+    bumped
 }
