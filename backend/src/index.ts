@@ -21,10 +21,18 @@ import {
 import { pingRedis, disconnectRedis } from "./redis.js";
 import { webhookRouter } from "./webhook.js";
 import { emailRouter } from "./routes/emailRoutes.js";
+import { gasRouter } from "./routes/gasRoutes.js";
+import { yieldRouter } from "./routes/yieldRoutes.js";
+import { queueRouter } from "./routes/queueRoutes.js";
 import { startWorker, stopWorker } from "./queue.js";
+import { analyticsRouter } from "./routes/analyticsRoutes.js";
 import { warmCache } from "./services/defi.js";
+import { runCacheWarmup, getWarmupStatus } from "./services/cacheWarmup.js";
 import { startEmailWorker, stopEmailWorker } from "./services/emailQueue.js";
 import { startYieldWorker, stopYieldWorker } from "./services/yieldWorker.js";
+import { vaultRouter } from "./routes/vaultRoutes.js";
+import { userPreferencesRouter } from "./routes/userPreferencesRoutes.js";
+import { leaderboardRouter } from "./routes/leaderboardRoutes.js";
 import {
   applySecurityHeaders,
   corsOptions,
@@ -122,31 +130,34 @@ app.post("/api/auth/revoke-all", authenticate, userRateLimiter(), async (req, re
 // ── A01 Broken Access Control: all protected routes use `authenticate` ────────
 app.use("/api/webhooks", authenticate, webhookRouter);
 app.use("/api/email", emailRouter);
-
-// ── API versioning ────────────────────────────────────────────────────────
-// All v1 routes — versioned, response wrapped with { version: 'v1', data }
-app.use("/api/v1", v1Router);
-
-// /api/latest — always points to the current version (v1)
-app.use("/api/latest", v1Router);
-
-// Legacy unversioned preferences path — adds deprecation headers per RFC 8594
-// Clients should migrate to /api/v1/users/preferences
-app.use(
-  "/api/users/preferences",
-  deprecationHeader("2027-01-01"),
-  authenticate,
-  userPreferencesRouter
-);
-
-// API documentation endpoint
-app.use("/api/docs", docsRouter);
+app.use("/api/v1/user/portfolio", authenticate, portfolioRouter);
+app.use("/api/v1/gas", gasRouter);
+app.use("/api/v1/yield", yieldRouter);
+app.use("/api/v1/queue", queueRouter);
+app.use("/api/v1/vault", vaultRouter);
+// Issue #322: Public leaderboard endpoint — no auth required (truncated addresses only)
+app.use("/api/vault/leaderboard", leaderboardRouter);
+// Issue #318: User preferences — requires authentication
+app.use("/api/users/preferences", authenticate, userPreferencesRouter);
 
 app.get("/api/health", async (_req, res) => {
   const redisHealthy = await pingRedis();
+  const warmup = getWarmupStatus();
+
+  // Return 'starting' until cache warm-up completes (issue #325)
+  let status: string;
+  if (warmup === "pending" || warmup === "warming") {
+    status = "starting";
+  } else if (!redisHealthy) {
+    status = "degraded";
+  } else {
+    status = "ok";
+  }
+
   res.json({
-    status: redisHealthy ? "ok" : "degraded",
+    status,
     redis: redisHealthy,
+    warmup,
     timestamp: new Date().toISOString(),
   });
 });
@@ -156,7 +167,8 @@ const server = app.listen(PORT, () => {
   startWorker();
   startEmailWorker();
   startYieldWorker();
-  void warmCache();
+  void warmCache();           // existing DeFi price warm-up
+  void runCacheWarmup();      // issue #325: vault stats / share price / top depositors
   console.log(`Aura Vault backend running on port ${PORT}`);
 });
 

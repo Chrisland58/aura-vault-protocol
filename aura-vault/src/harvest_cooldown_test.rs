@@ -11,6 +11,7 @@ mod harvest_cooldown_tests {
     extern crate std;
 
     use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+    use soroban_sdk::testutils::Ledger as _;
     use soroban_sdk::token::StellarAssetClient;
 
     use crate::{AuraVault, AuraVaultClient, VaultError};

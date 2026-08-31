@@ -55,10 +55,14 @@ describe("corsOptions", () => {
   it("allows a valid origin", () => {
     process.env.CORS_ORIGIN = "https://app.aura-vault.xyz";
     const origin = "https://app.aura-vault.xyz";
-    let result: Parameters<Parameters<NonNullable<typeof corsOptions.origin>>[1]>[0] | undefined;
-    (corsOptions.origin as Function)(origin, (err: unknown, allow: unknown) => {
-      result = allow as any;
-    });
+    let result: boolean | undefined;
+    if (typeof corsOptions.origin === "function") {
+      corsOptions.origin(origin, (err: unknown, allow: unknown) => {
+        result = allow as boolean | undefined;
+      });
+    } else {
+      throw new Error("corsOptions.origin is not a function");
+    }
     expect(result).toBe(true);
     delete process.env.CORS_ORIGIN;
   });

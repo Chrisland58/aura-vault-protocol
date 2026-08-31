@@ -82,9 +82,9 @@ yieldRouter.get("/stats", async (req: Request, res: Response): Promise<void> => 
 
     const { data, nextCursor } = paginateArray(
       allHistory,
-      (item: Record<string, unknown>, index: number) => ({
+      (item, index) => ({
         id: String(index),
-        timestamp: typeof item.runAt === "string" ? item.runAt : "0",
+        timestamp: typeof item.lastRunAt === "string" ? item.lastRunAt : "0",
       }),
       limit,
       cursor,

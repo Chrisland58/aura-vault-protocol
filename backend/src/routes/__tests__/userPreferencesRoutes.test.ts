@@ -49,8 +49,8 @@ const mockUpdateUserPreferences = vi.fn(
 );
 
 vi.mock("../../services/userPreferencesService.js", () => ({
-  getUserPreferences: (...args: any[]) => mockGetUserPreferences(...args),
-  updateUserPreferences: (...args: any[]) => mockUpdateUserPreferences(...args),
+  getUserPreferences: mockGetUserPreferences,
+  updateUserPreferences: mockUpdateUserPreferences,
 }));
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

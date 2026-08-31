@@ -153,6 +153,36 @@ pub trait AuraVaultTrait {
     /// - [`VaultError::MathOverflow`] — arithmetic overflow.
     fn harvest(env: Env, caller: Address, yield_amount: i128) -> Result<(), VaultError>;
 
+    /// Distribute underlying-token yield proportionally to all shareholders via
+    /// the cumulative yield-per-share accumulator.
+    fn distribute_yield(env: Env, caller: Address, yield_amount: i128) -> Result<(), VaultError>;
+
+    /// Distribute a whitelisted alternative yield token using an explicitly
+    /// supplied underlying value.
+    fn distribute_yield_token(
+        env: Env,
+        caller: Address,
+        alt_token: Address,
+        yield_amount: i128,
+        underlying_amount: i128,
+    ) -> Result<(), VaultError>;
+
+    /// Alias for `distribute_yield` used by strategies that collect yield from
+    /// an external source before crediting the vault.
+    fn collect_yield(env: Env, caller: Address, amount: i128) -> Result<(), VaultError>;
+
+    /// Preview the effect of a yield distribution without mutating state.
+    fn preview_distribution(env: Env, yield_amount: i128) -> Result<(i128, i128, i128, bool), VaultError>;
+
+    /// Claim all accrued yield for the caller.
+    fn collect_pending_yield(env: Env, caller: Address) -> Result<i128, VaultError>;
+
+    /// Return the caller's currently claimable pending yield.
+    fn pending_yield(env: Env, addr: Address) -> i128;
+
+    /// Return the current distribution epoch counter.
+    fn distribution_epoch(env: Env) -> u64;
+
     /// Halt all mutating operations (deposit, withdraw, harvest).
     ///
     /// Admin-only. Emits a `paused` event. Use [`unpause`] to resume.
@@ -263,6 +293,46 @@ pub trait AuraVaultTrait {
     ///
     /// Read-only; no authorization required.
     fn total_fees_collected(env: Env) -> i128;
+
+    /// Set the vault TVL cap. A value of `0` disables the cap.
+    fn set_tvl_cap(env: Env, admin: Address, cap: i128) -> Result<(), VaultError>;
+
+    /// Return the current TVL cap. `0` means the cap is disabled.
+    fn get_tvl_cap(env: Env) -> i128;
+
+    /// Configure the minimum delay between successful harvests.
+    fn set_harvest_cooldown(env: Env, admin: Address, secs: u64) -> Result<(), VaultError>;
+
+    /// Reset the harvest cooldown timestamp so the next harvest is not blocked.
+    fn reset_harvest_cooldown(env: Env, admin: Address) -> Result<(), VaultError>;
+
+    /// Return the timestamp of the last successful harvest.
+    fn last_harvest_time(env: Env) -> u64;
+
+    // -----------------------------------------------------------------------
+    // Circuit breaker — share-price movement limit (Issue #371)
+    // -----------------------------------------------------------------------
+
+    /// Set the maximum allowed share-price movement per harvest, in basis points.
+    ///
+    /// Admin-only. `0` disables the check. When a harvest would move the share
+    /// price by more than `bps` basis points (up **or** down), the vault
+    /// auto-pauses and emits a `suspicious` / `price_movement` event.
+    /// The admin must call [`unpause`] after reviewing.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] — vault not yet initialised.
+    /// - [`VaultError::UpgradeUnauthorized`] — caller is not the admin.
+    ///
+    /// [`unpause`]: AuraVaultTrait::unpause
+    fn set_price_movement_limit(env: Env, admin: Address, bps: u32) -> Result<(), VaultError>;
+
+    /// Read the current share-price movement limit in basis points.
+    ///
+    /// Returns `0` when the circuit breaker is disabled.
+    /// Read-only; no authorization required.
+    fn get_price_movement_limit(env: Env) -> u32;
 
     /// Returns the total underlying tokens currently tracked by the vault
     /// (`total_deposited`), in the underlying token's smallest unit.
@@ -410,4 +480,25 @@ pub trait AuraVaultTrait {
     /// - `env` — Soroban execution environment.
     /// - `proposal_id` — ID of the proposal to query.
     fn proposal_status(env: Env, proposal_id: u64) -> Option<String>;
+
+    /// Return the human-readable English message for a given [`VaultError`]
+    /// code, or `None` if the code does not correspond to a known variant.
+    ///
+    /// This is a pure view function included in the contract ABI so that
+    /// wallet and explorer UIs can query error descriptions on-chain without
+    /// bundling a separate message table. The returned string matches the
+    /// value of [`VaultError::message`] for the corresponding variant.
+    ///
+    /// Read-only; no authorization required.
+    ///
+    /// # Parameters
+    ///
+    /// - `env` — Soroban execution environment.
+    /// - `code` — The numeric discriminant of a [`VaultError`] variant
+    ///   (e.g. `11` for [`VaultError::VaultPaused`]).
+    ///
+    /// # Returns
+    ///
+    /// `Some(message)` for a recognised code, `None` otherwise.
+    fn get_vault_error_message(env: Env, code: u32) -> Option<String>;
 }

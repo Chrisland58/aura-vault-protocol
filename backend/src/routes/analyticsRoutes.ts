@@ -9,6 +9,7 @@
 
 import express, { Request, Response } from "express";
 import { getPortfolioAnalytics, type TxEvent } from "../services/analyticsService.js";
+import { successResponse, errorResponse } from "../dto/index.js";
 
 const router = express.Router();
 
@@ -45,20 +46,22 @@ async function loadEventsForAddress(address: string): Promise<TxEvent[]> {
  *   500 { error: "Internal server error" }
  */
 router.get("/:address/analytics", async (req: Request, res: Response) => {
-  const { address } = req.params;
+  const address = Array.isArray(req.params.address)
+    ? req.params.address[0]
+    : req.params.address;
 
   // Basic Stellar address validation (G… public keys are 56 chars)
   if (!address || !/^[A-Z2-7]{56}$/.test(address)) {
-    res.status(400).json({ error: "Invalid Stellar address format" });
+    res.status(400).json(errorResponse("INVALID_ADDRESS", "Invalid Stellar address format"));
     return;
   }
 
   try {
     const analytics = await getPortfolioAnalytics(address, loadEventsForAddress);
-    res.json(analytics);
+    res.json(successResponse(analytics));
   } catch (err) {
     console.error("[analyticsRoute] error computing analytics:", err);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json(errorResponse("INTERNAL_ERROR", "Internal server error"));
   }
 });
 

@@ -219,12 +219,15 @@ export default function PerformanceCharts() {
       {
         label: "Balance",
         data: data.balanceHistory.map((p) => p.balance),
-        borderColor: "rgb(59, 130, 246)",
-        backgroundColor: "rgba(59, 130, 246, 0.1)",
+        borderColor: "#2563eb",
+        backgroundColor: "rgba(37, 99, 235, 0.12)",
         borderWidth: 2,
         fill: true,
-        pointRadius: 0,
-        pointHoverRadius: 6,
+        pointRadius: 2,
+        pointHoverRadius: 7,
+        pointBackgroundColor: "#2563eb",
+        pointBorderColor: "#ffffff",
+        pointBorderWidth: 1.5,
         tension: 0.4,
         order: 3,
       },
@@ -234,8 +237,8 @@ export default function PerformanceCharts() {
               label: "Deposit",
               data: depositPoints,
               borderColor: "transparent",
-              backgroundColor: "rgb(34, 197, 94)",
-              pointBackgroundColor: "rgb(34, 197, 94)",
+              backgroundColor: "#16a34a",
+              pointBackgroundColor: "#16a34a",
               pointBorderColor: "#fff",
               pointBorderWidth: 2,
               pointRadius: depositPoints.map((v) => (v !== null ? 10 : 0)),
@@ -250,8 +253,8 @@ export default function PerformanceCharts() {
               label: "Withdrawal",
               data: withdrawPoints,
               borderColor: "transparent",
-              backgroundColor: "rgb(239, 68, 68)",
-              pointBackgroundColor: "rgb(239, 68, 68)",
+              backgroundColor: "#dc2626",
+              pointBackgroundColor: "#dc2626",
               pointBorderColor: "#fff",
               pointBorderWidth: 2,
               pointRadius: withdrawPoints.map((v) => (v !== null ? 10 : 0)),
@@ -278,12 +281,15 @@ export default function PerformanceCharts() {
       {
         label: "APY %",
         data: data.balanceHistory.map((p) => p.apy),
-        borderColor: "rgb(34, 197, 94)",
-        backgroundColor: "rgba(34, 197, 94, 0.1)",
+        borderColor: "#16a34a",
+        backgroundColor: "rgba(22, 163, 74, 0.12)",
         borderWidth: 2,
         fill: true,
-        pointRadius: 0,
-        pointHoverRadius: 6,
+        pointRadius: 2,
+        pointHoverRadius: 7,
+        pointBackgroundColor: "#16a34a",
+        pointBorderColor: "#ffffff",
+        pointBorderWidth: 1.5,
         tension: 0.4,
       },
     ],
@@ -294,6 +300,18 @@ export default function PerformanceCharts() {
   const balanceChartOptions = {
     responsive: true,
     maintainAspectRatio: false,
+    interaction: {
+      mode: "index" as const,
+      intersect: false,
+    },
+    elements: {
+      point: {
+        hitRadius: 12,
+      },
+    },
+    animation: {
+      duration: 0,
+    },
     plugins: {
       legend: {
         display: walletConnected && showMarkers,
@@ -335,7 +353,7 @@ export default function PerformanceCharts() {
               }
               return `${datasetLabel}: ${value.toFixed(2)}`;
             }
-            return value !== null ? value.toFixed(2) : "N/A";
+            return value !== null ? `$${value.toFixed(2)}` : "N/A";
           },
           // Filter out null values so tooltip only shows when hovered on a real point
           filter: function (item: TooltipItem<"line">) {
@@ -369,6 +387,18 @@ export default function PerformanceCharts() {
   const apyChartOptions = {
     responsive: true,
     maintainAspectRatio: false,
+    interaction: {
+      mode: "nearest" as const,
+      intersect: false,
+    },
+    elements: {
+      point: {
+        hitRadius: 12,
+      },
+    },
+    animation: {
+      duration: 0,
+    },
     plugins: {
       legend: { display: false },
       tooltip: {
@@ -383,6 +413,10 @@ export default function PerformanceCharts() {
           label: function (context: TooltipItem<"line">) {
             const value = context.parsed.y;
             return value !== null ? `${value.toFixed(2)}%` : "N/A";
+          },
+          title: function (tooltipItems: TooltipItem<"line">[]) {
+            const item = tooltipItems[0];
+            return item?.label ?? "Point";
           },
         },
       },
@@ -494,7 +528,7 @@ export default function PerformanceCharts() {
       {/* Time Period Selector */}
       <div
         data-cy="time-period-selector"
-        className="flex gap-2 mb-6 border-b border-zinc-200 dark:border-zinc-700 pb-4"
+        className="flex flex-wrap gap-2 mb-6 border-b border-zinc-200 dark:border-zinc-700 pb-4"
       >
         {timePeriods.map((p) => (
           <button
@@ -515,7 +549,7 @@ export default function PerformanceCharts() {
       {/* Chart Tabs */}
       <div
         data-cy="chart-tabs"
-        className="flex gap-2 mb-6 border-b border-zinc-200 dark:border-zinc-700"
+        className="flex flex-wrap gap-2 mb-6 border-b border-zinc-200 dark:border-zinc-700"
       >
         {(["balance", "apy", "yield"] as const).map((tab) => (
           <button
@@ -569,7 +603,8 @@ export default function PerformanceCharts() {
       {activeTab === "yield" && (
         <div data-cy="yield-breakdown" className="space-y-4">
           {data.yieldBreakdown.map((item, idx) => {
-            const percentage = (item.amount / data.totalYield) * 100;
+            const percentage = data.totalYield > 0 ? (item.amount / data.totalYield) * 100 : 0;
+            const colors = ["bg-blue-600", "bg-emerald-600", "bg-violet-600"];
             return (
               <div key={idx}>
                 <div className="flex justify-between text-sm mb-2">
@@ -580,10 +615,17 @@ export default function PerformanceCharts() {
                     {item.amount.toFixed(2)} ({percentage.toFixed(1)}%)
                   </span>
                 </div>
-                <div className="h-2 rounded-full bg-zinc-200 dark:bg-zinc-700 overflow-hidden">
+                <div
+                  className="h-2 rounded-full bg-zinc-200 dark:bg-zinc-700 overflow-hidden"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(percentage)}
+                  aria-label={`${item.source} share of total yield`}
+                >
                   <div
-                    className="h-full bg-blue-500 rounded-full"
-                    style={{ width: `${percentage}%` }}
+                    className={`h-full rounded-full ${colors[idx % colors.length]}`}
+                    style={{ width: `${Math.max(percentage, 4)}%` }}
                   />
                 </div>
               </div>
