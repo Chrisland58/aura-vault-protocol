@@ -55,6 +55,8 @@ import {
   loginSchema,
   refreshSchema,
 } from "./validation.js";
+import { adminRouter } from './routes/adminRoutes.js';
+import { authenticateAdmin } from './middleware/adminMiddleware.js';
 
 const app = express();
 app.use(cors());
@@ -162,6 +164,9 @@ app.use("/api/vault/leaderboard", leaderboardRouter);
 app.use("/api/portfolio/:address", portfolioSearchRouter);
 // Issue #318: User preferences — requires authentication
 app.use("/api/users/preferences", authenticate, userPreferencesRouter);
+
+// Admin routes — require admin JWT scope (scope: 'admin')
+app.use('/api/admin', authenticateAdmin, adminRouter);
 
 app.get("/api/health", async (_req, res) => {
   const redisHealthy = await pingRedis();
