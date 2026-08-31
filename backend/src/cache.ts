@@ -24,6 +24,8 @@ export const NS = {
   // Yield worker
   YIELD_STATS: "yield:stats",
   YIELD_HISTORY: "yield:history",
+  // Vault simulation
+  VAULT_SIMULATE: "vault:simulate",
 } as const;
 
 export type Namespace = (typeof NS)[keyof typeof NS];

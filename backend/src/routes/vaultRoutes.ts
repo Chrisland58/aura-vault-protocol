@@ -6,6 +6,17 @@
  * Returns vault statistics with Redis caching. Cache misses fetch live data,
  * cache hits serve instantly (< 50 ms). Harvest events invalidate the cache.
  * Redis unavailability falls back gracefully to a direct contract call.
+ *
+ * ---
+ *
+ * Deposit Simulation Route — Issue #317
+ *
+ * POST /api/v1/vault/simulate/deposit
+ *
+ * Read-only endpoint that computes expected shares, share price, and price
+ * impact for a prospective deposit without executing any on-chain transaction.
+ * Response is cached per (totalAssets, totalShares) vault state so that
+ * repeated previews with the same state are served instantly.
  */
 
 import { Router, Request, Response } from "express";
@@ -16,6 +27,10 @@ import { getDbMetrics, getSlowQueryLog, dbMetricsPrometheusText } from "../servi
 export const VAULT_STATS_CACHE_NS = "vault:stats";
 export const VAULT_STATS_CACHE_KEY = "current";
 export const VAULT_STATS_TTL_SECS = 60; // 1-minute TTL
+
+// Deposit simulation cache constants
+export const VAULT_SIMULATE_CACHE_NS = "vault:simulate";
+export const VAULT_SIMULATE_TTL_SECS = 60; // 1-minute TTL
 
 export interface VaultStatsCacheEntry {
   data: VaultStatsData;
