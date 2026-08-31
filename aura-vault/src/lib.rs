@@ -969,6 +969,18 @@ impl AuraVault {
         // Record harvest timestamp for cooldown enforcement (Issue #471)
         set_last_harvest_time(&env, env.ledger().timestamp());
 
+        // High-water-mark: update if new share price exceeds previous peak.
+        // share_price = new_total × PRICE_SCALE / total_shares
+        let new_price = new_total
+            .checked_mul(PRICE_SCALE)
+            .ok_or(VaultError::MathOverflow)?
+            .checked_div(total_shares)
+            .ok_or(VaultError::MathOverflow)?;
+        let current_hwm = get_high_water_mark(&env);
+        if new_price > current_hwm {
+            set_high_water_mark(&env, new_price);
+        }
+
         env.events().publish(
             (Symbol::new(&env, "harvest"), caller.clone(), yield_amount),
             (yield_after_fee, fee_amount, new_total),
@@ -2048,6 +2060,44 @@ impl AuraVault {
     /// - `address` — The Stellar account address to query.
     pub fn balance_of(env: Env, address: Address) -> i128 {
         get_balance(&env, &address)
+    }
+
+    // -----------------------------------------------------------------------
+    // high_water_mark  (read-only)
+    // Returns the highest share price ever recorded (scaled by PRICE_SCALE = 1e7).
+    // A value of 0 means no harvest has occurred yet.
+    // -----------------------------------------------------------------------
+    pub fn high_water_mark(env: Env) -> i128 {
+        get_high_water_mark(&env)
+    }
+
+    // -----------------------------------------------------------------------
+    // disable_floor / enable_floor  — admin-only floor bypass
+    // Allows the admin to temporarily disable the price-floor check for a
+    // legitimate large withdrawal that would otherwise breach the 1% band.
+    // -----------------------------------------------------------------------
+    pub fn disable_floor(env: Env, admin: Address) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_floor_disabled(&env, true);
+        env.events().publish((Symbol::new(&env, "floor_disabled"),), ());
+        bump_instance(&env);
+        Ok(())
+    }
+
+    pub fn enable_floor(env: Env, admin: Address) -> Result<(), VaultError> {
+        let stored_admin = get_admin(&env).ok_or(VaultError::NotInitialized)?;
+        if stored_admin != admin {
+            return Err(VaultError::UpgradeUnauthorized);
+        }
+        admin.require_auth();
+        set_floor_disabled(&env, false);
+        env.events().publish((Symbol::new(&env, "floor_enabled"),), ());
+        bump_instance(&env);
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
