@@ -1,3 +1,7 @@
+// ── OpenTelemetry — must be initialised before all other imports ─────────────
+import { initTracing, tracingMiddleware, shutdownTracing } from "./tracing.js";
+initTracing();
+
 import express from "express";
 import cors from "cors";
 import { authenticate } from "./middleware/authMiddleware.js";
@@ -52,23 +56,26 @@ import { docsRouter } from "./routes/docsRoutes.js";
 import { deprecationHeader, CURRENT_API_VERSION } from "./middleware/versionMiddleware.js";
 
 const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(loggingMiddleware());
-app.use(globalIpRateLimiter(["/api/health"]));
+
+// ── OpenTelemetry tracing middleware ─────────────────────────────────────────
+// Attaches trace spans to every HTTP request and propagates
+// X-Trace-Id / X-Correlation-Id headers on the response.
+app.use(tracingMiddleware());
 
 // ── A05 Security Misconfiguration: security headers (Helmet) ─────────────────
 applySecurityHeaders(app);
 
 // ── A05 Security Misconfiguration: strict CORS ───────────────────────────────
-// Replace the open cors() with allowlist-driven corsOptions
 app.use(cors(corsOptions));
 
 // ── A09 Logging Failures: correlation IDs + structured request logging ────────
 app.use(correlationIdMiddleware());
 app.use(createRequestLogger());
+app.use(loggingMiddleware());
 
 app.use(express.json({ limit: "1mb" }));
+
+// Global IP rate limiter — health check excluded so load-balancer probes are not throttled
 app.use(globalIpRateLimiter(["/api/health"]));
 
 // ── A03 Injection / A07 Auth Failures: validate login input with Zod ─────────
@@ -139,6 +146,7 @@ app.use("/api/v1/vault", vaultRouter);
 app.use("/api/vault/leaderboard", leaderboardRouter);
 // Issue #318: User preferences — requires authentication
 app.use("/api/users/preferences", authenticate, userPreferencesRouter);
+app.use("/api/analytics", analyticsRouter);
 
 app.get("/api/health", async (_req, res) => {
   const redisHealthy = await pingRedis();
@@ -177,6 +185,7 @@ async function shutdown(signal: string): Promise<void> {
   stopWorker();
   stopEmailWorker();
   stopYieldWorker();
+  await shutdownTracing();
   server.close(async () => {
     await disconnectRedis().catch((err) => {
       console.error("[shutdown] redis disconnect failed:", err);
