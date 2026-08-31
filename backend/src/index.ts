@@ -36,6 +36,7 @@ import { vaultRouter } from "./routes/vaultRoutes.js";
 import { vaultRegistryRouter } from "./routes/vaultRegistryRoutes.js";
 import { userPreferencesRouter } from "./routes/userPreferencesRoutes.js";
 import { leaderboardRouter } from "./routes/leaderboardRoutes.js";
+import { portfolioSearchRouter } from "./routes/portfolioSearchRoutes.js";
 import {
   applySecurityHeaders,
   corsOptions,
@@ -152,6 +153,8 @@ app.use("/api/v1/vault", vaultRouter);
 app.use("/api/v1/vaults", vaultRegistryRouter);
 // Issue #322: Public leaderboard endpoint — no auth required (truncated addresses only)
 app.use("/api/vault/leaderboard", leaderboardRouter);
+// Issue #311: Full-text search for transaction history
+app.use("/api/portfolio/:address", portfolioSearchRouter);
 // Issue #318: User preferences — requires authentication
 app.use("/api/users/preferences", authenticate, userPreferencesRouter);
 
